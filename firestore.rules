@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── families/{familyId} ───────────────────────────────────────────────────
+    // Any authenticated user can read / write families documents.
+    // The app itself enforces invite-code gating; the rule just requires auth.
+    match /families/{familyId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // ── quests/{questId} ─────────────────────────────────────────────────────
+    // quests belong to a family (familyId field). Any authenticated user may
+    // read/write quests (the app enforces role-based UI restrictions).
+    match /quests/{questId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // ── transactions/{txId} ──────────────────────────────────────────────────
+    match /transactions/{txId} {
+      allow read, write: if request.auth != null;
+    }
+
+    // ── userFamilyMap/{userId} ───────────────────────────────────────────────
+    match /userFamilyMap/{userId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
