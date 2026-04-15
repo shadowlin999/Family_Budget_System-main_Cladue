@@ -70,7 +70,7 @@ const KidDashboard: React.FC = () => {
   const {
     currentUser, envelopes, quests, transactions, expenseCategories,
     badges, treasureBoxes, treasureClaims, gamificationSettings,
-    purchaseTreasureBox, openOwnedBox, addTransaction, submitQuest, timezoneOffset = 480,
+    purchaseTreasureBox, openOwnedBox, addTransaction, submitQuest, failQuest, timezoneOffset = 480,
     currencySymbol, transferMoney,
     setUserPin,
   } = useStore();
@@ -318,8 +318,7 @@ const KidDashboard: React.FC = () => {
 
   const flashQuests = myQuests.filter(q =>
     !q.title.startsWith('(例行)') &&
-    (q.status === 'open' || q.status === 'pending_approval') &&
-    (!q.dueDate || new Date(q.dueDate) >= todayStart)
+    (q.status === 'open' || q.status === 'pending_approval')
   );
 
   const renderSection = (id: string) => {
@@ -671,32 +670,62 @@ const KidDashboard: React.FC = () => {
     }
   };
 
-  const renderQuestCard = (quest: Quest) => (
-    <div key={quest.id} className={`glass-card relative overflow-hidden ${quest.status === 'completed' ? 'border-l-4 border-l-green-500' : quest.status === 'open' ? 'border-l-4 border-l-info' : quest.status === 'pending_approval' ? 'border-l-4 border-l-amber-400' : 'border-l-4 border-l-red-500 opacity-70'}`}>
-      <div className="flex justify-between items-start mb-1.5">
-        <span className="font-black text-sm flex items-center gap-1.5"><span>{quest.icon || '📜'}</span> {quest.title}</span>
-        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 ${quest.status === 'open' ? 'bg-info/20 text-info' : quest.status === 'completed' ? 'bg-green-500/20 text-green-400' : quest.status === 'pending_approval' ? 'bg-amber-500/20 text-amber-400' : quest.status === 'rejected' ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'}`}>
-          {quest.status === 'open' ? '執行中' : quest.status === 'completed' ? '✅ 完成' : quest.status === 'pending_approval' ? '⏳ 審核中' : quest.status === 'rejected' ? '❌ 拒絕' : '⏳ 延期'}
-        </span>
-      </div>
-      <div className="flex flex-wrap gap-1.5 text-[10px] mb-2">
-        <span className="bg-white/10 px-2 py-0.5 rounded text-blue-300">⭐ {quest.expReward} EXP</span>
-        {quest.moneyReward > 0 && <span className="bg-white/10 px-2 py-0.5 rounded text-green-300">💰 {currencySymbol}{quest.moneyReward}</span>}
-        {(quest.gemReward || 0) > 0 && <span className="bg-white/10 px-2 py-0.5 rounded text-amber-300">💎 {quest.gemReward}</span>}
-        {quest.dueDate && <span className="bg-white/5 px-2 py-0.5 rounded text-muted">截止: {quest.dueDate}</span>}
-      </div>
-      {quest.feedback?.comment && (
-        <div className="flex items-center gap-2 text-xs text-muted bg-amber-500/5 border border-amber-500/10 rounded-lg px-2 py-1.5 mb-2">
-          <span className="text-base flex-shrink-0">{quest.feedback.emoji || '💬'}</span><span className="italic">{quest.feedback.comment}</span>
+  const renderQuestCard = (quest: Quest) => {
+    const isOverdue = quest.status === 'open' && !!quest.dueDate && new Date(quest.dueDate) < todayStart;
+    const borderClass = isOverdue
+      ? 'border-l-4 border-l-red-500 opacity-80'
+      : quest.status === 'completed' ? 'border-l-4 border-l-green-500'
+      : quest.status === 'open' ? 'border-l-4 border-l-info'
+      : quest.status === 'pending_approval' ? 'border-l-4 border-l-amber-400'
+      : 'border-l-4 border-l-red-500 opacity-70';
+    const badgeClass = isOverdue
+      ? 'bg-red-500/20 text-red-400'
+      : quest.status === 'open' ? 'bg-info/20 text-info'
+      : quest.status === 'completed' ? 'bg-green-500/20 text-green-400'
+      : quest.status === 'pending_approval' ? 'bg-amber-500/20 text-amber-400'
+      : quest.status === 'rejected' ? 'bg-red-500/20 text-red-400'
+      : 'bg-orange-500/20 text-orange-400';
+    const badgeLabel = isOverdue ? '💀 任務失敗'
+      : quest.status === 'open' ? '執行中'
+      : quest.status === 'completed' ? '✅ 完成'
+      : quest.status === 'pending_approval' ? '⏳ 審核中'
+      : quest.status === 'rejected' ? '❌ 拒絕'
+      : '⏳ 延期';
+
+    return (
+      <div key={quest.id} className={`glass-card relative overflow-hidden ${borderClass}`}>
+        <div className="flex justify-between items-start mb-1.5">
+          <span className="font-black text-sm flex items-center gap-1.5"><span>{quest.icon || '📜'}</span> {quest.title}</span>
+          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0 ${badgeClass}`}>
+            {badgeLabel}
+          </span>
         </div>
-      )}
-      {quest.status === 'open' && (
-        <button className="btn btn-primary text-xs py-1.5 w-full flex items-center justify-center gap-1 mt-1" onClick={() => submitQuest(quest.id)}>
-          完成任務 <ChevronRight size={14} />
-        </button>
-      )}
-    </div>
-  );
+        <div className="flex flex-wrap gap-1.5 text-[10px] mb-2">
+          <span className="bg-white/10 px-2 py-0.5 rounded text-blue-300">⭐ {quest.expReward} EXP</span>
+          {quest.moneyReward > 0 && <span className="bg-white/10 px-2 py-0.5 rounded text-green-300">💰 {currencySymbol}{quest.moneyReward}</span>}
+          {(quest.gemReward || 0) > 0 && <span className="bg-white/10 px-2 py-0.5 rounded text-amber-300">💎 {quest.gemReward}</span>}
+          {quest.dueDate && <span className={`px-2 py-0.5 rounded ${isOverdue ? 'bg-red-500/10 text-red-300' : 'bg-white/5 text-muted'}`}>截止: {quest.dueDate}</span>}
+        </div>
+        {quest.feedback?.comment && (
+          <div className="flex items-center gap-2 text-xs text-muted bg-amber-500/5 border border-amber-500/10 rounded-lg px-2 py-1.5 mb-2">
+            <span className="text-base flex-shrink-0">{quest.feedback.emoji || '💬'}</span><span className="italic">{quest.feedback.comment}</span>
+          </div>
+        )}
+        {isOverdue ? (
+          <button
+            className="btn text-xs py-1.5 w-full flex items-center justify-center gap-1 mt-1 bg-slate-600/60 hover:bg-slate-500/60 text-white border border-slate-500/30"
+            onClick={() => failQuest(quest.id)}
+          >
+            💪 加油，下次一定可以！
+          </button>
+        ) : quest.status === 'open' ? (
+          <button className="btn btn-primary text-xs py-1.5 w-full flex items-center justify-center gap-1 mt-1" onClick={() => submitQuest(quest.id)}>
+            完成任務 <ChevronRight size={14} />
+          </button>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col gap-6 max-w-2xl mx-auto px-4 pb-20">

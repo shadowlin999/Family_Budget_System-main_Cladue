@@ -1,4 +1,4 @@
-export type QuestStatus = 'open' | 'pending_approval' | 'completed' | 'rejected' | 'delayed';
+export type QuestStatus = 'open' | 'pending_approval' | 'completed' | 'rejected' | 'delayed' | 'failed';
 
 export interface QuestFeedback {
   grade: 'great' | 'good' | 'tryAgain' | 'rejected' | 'delayed';

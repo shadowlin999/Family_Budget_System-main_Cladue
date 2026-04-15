@@ -105,6 +105,7 @@ interface AppState {
   // Game Actions
   createQuest: (ownerId: string, title: string, expReward: number, moneyReward: number, gemReward: number, icon?: string, dueDate?: string, boxRewardId?: string) => Promise<void>;
   submitQuest: (questId: string) => Promise<void>;
+  failQuest: (questId: string) => Promise<void>;
   approveQuest: (questId: string) => Promise<void>;
   approveQuestWithFeedback: (questId: string, grade: QuestFeedback['grade'], emoji: string, comment: string, expMult: number, moneyMult: number, gemMult: number) => Promise<void>;
   rejectQuest: (questId: string, comment: string, emoji: string) => Promise<void>;
@@ -853,7 +854,7 @@ export const useStore = create<AppState>()((set, get) => ({
       if (newQuest.dueDate === undefined) delete newQuest.dueDate;
       if (newQuest.boxRewardId === undefined) delete newQuest.boxRewardId;
 
-      await addDoc(collection(db, 'quests'), newQuest);
+      await setDoc(doc(db, 'quests', id), newQuest);
     } catch (err) {
       console.error('Error creating quest:', err);
     }
@@ -862,6 +863,11 @@ export const useStore = create<AppState>()((set, get) => ({
   // ── submitQuest ───────────────────────────────────────────────
   submitQuest: async (questId) => {
     await updateDoc(doc(db, 'quests', questId), { status: 'pending_approval' });
+  },
+
+  // ── failQuest ─────────────────────────────────────────────────
+  failQuest: async (questId) => {
+    await updateDoc(doc(db, 'quests', questId), { status: 'failed' });
   },
 
   // ── approveQuest ──────────────────────────────────────────────
