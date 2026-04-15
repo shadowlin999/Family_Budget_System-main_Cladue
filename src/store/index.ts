@@ -853,7 +853,7 @@ export const useStore = create<AppState>()((set, get) => ({
       if (newQuest.dueDate === undefined) delete newQuest.dueDate;
       if (newQuest.boxRewardId === undefined) delete newQuest.boxRewardId;
 
-      await addDoc(collection(db, `families/${familyId}/quests`), newQuest);
+      await addDoc(collection(db, 'quests'), newQuest);
     } catch (err) {
       console.error('Error creating quest:', err);
     }

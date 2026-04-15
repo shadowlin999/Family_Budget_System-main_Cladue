@@ -212,6 +212,8 @@ const KidDashboard: React.FC = () => {
     return entries.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 30);
   }, [myQuests, treasureClaims, currentUser, treasureBoxes]);
 
+  const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
@@ -314,7 +316,11 @@ const KidDashboard: React.FC = () => {
     }
   };
 
-  const flashQuests = myQuests.filter(q => !q.title.startsWith('(例行)') && (q.status === 'open' || q.status === 'pending_approval'));
+  const flashQuests = myQuests.filter(q =>
+    !q.title.startsWith('(例行)') &&
+    (q.status === 'open' || q.status === 'pending_approval') &&
+    (!q.dueDate || new Date(q.dueDate) >= todayStart)
+  );
 
   const renderSection = (id: string) => {
     switch (id) {
