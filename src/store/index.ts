@@ -3,8 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import type { User as FirebaseUser } from 'firebase/auth';
 import {
   doc, getDoc, setDoc, updateDoc, collection,
-  onSnapshot, addDoc, writeBatch,
-  query, where, serverTimestamp, Timestamp,
+  onSnapshot, addDoc, writeBatch, getDocs,
+  query, where, serverTimestamp, Timestamp, increment,
 } from 'firebase/firestore';
 import type { Unsubscribe } from 'firebase/firestore';
 import { db } from '../services/firebase';
@@ -18,6 +18,7 @@ import type {
   TreasureBoxItem, TreasureBox, TreasureClaim,
 } from '../types/gamification';
 import type { AllowancePeriod, FamilyDoc } from '../types/family';
+import type { SystemAdmin, SystemAdminRole, InviteCode, FamilySummary } from '../types/admin';
 
 // ── Domain function imports ────────────────────────────────────────────────────
 import { getNextAllowanceDate } from '../domain/allowance';
@@ -33,6 +34,7 @@ export type {
   TreasureBoxItem, TreasureBox, TreasureClaim,
 } from '../types/gamification';
 export type { AllowancePeriod, FamilyDoc } from '../types/family';
+export type { SystemAdmin, SystemAdminRole, InviteCode, FamilySummary } from '../types/admin';
 
 // ── Re-export domain functions for backward compatibility with views ───────────
 export { getNextAllowanceDate } from '../domain/allowance';
@@ -55,6 +57,8 @@ interface AppState {
   kidInviteCode: string | null;
   isLoading: boolean;
   isNewFamily: boolean;  // true = show FamilySetup screen
+  needsInviteCode: boolean;  // new Google user must enter invite code first
+  systemAdminRole: SystemAdminRole | null;
 
   // App data (live-synced from Firestore)
   users: User[];
@@ -165,6 +169,16 @@ interface AppState {
 
   // Transfer
   transferMoney: (fromEnvId: string, toEnvId: string, amount: number, note?: string) => Promise<void>;
+
+  // ── System Admin Actions ──────────────────────────────
+  verifyAndUseSystemInviteCode: (code: string) => Promise<boolean>;
+  generateSystemInviteCode: () => Promise<string | null>;
+  listAllFamilies: () => Promise<FamilySummary[]>;
+  listAllInviteCodes: () => Promise<InviteCode[]>;
+  listSystemAdmins: () => Promise<SystemAdmin[]>;
+  setSystemAdmin: (uid: string, email: string, role: SystemAdminRole, quota?: number) => Promise<void>;
+  removeSystemAdmin: (uid: string) => Promise<void>;
+  updateAdminQuota: (uid: string, quota: number | undefined) => Promise<void>;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -207,6 +221,8 @@ export const useStore = create<AppState>()((set, get) => ({
   kidInviteCode: null,
   isLoading: true,
   isNewFamily: false,
+  needsInviteCode: false,
+  systemAdminRole: null,
   users: [],
   envelopes: [],
   transactions: [],
@@ -231,24 +247,43 @@ export const useStore = create<AppState>()((set, get) => ({
   setFirebaseUser: async (user) => {
     if (!user) {
       get().unsubscribeAll();
-      set({ firebaseUser: null, familyId: null, familyName: null, adminInviteCode: null, kidInviteCode: null, isLoading: false, isNewFamily: false, users: [], envelopes: [], transactions: [], quests: [], routineQuests: [], currentUser: null });
+      set({ firebaseUser: null, familyId: null, familyName: null, adminInviteCode: null, kidInviteCode: null, isLoading: false, isNewFamily: false, needsInviteCode: false, systemAdminRole: null, users: [], envelopes: [], transactions: [], quests: [], routineQuests: [], currentUser: null });
       return;
     }
     set({ isLoading: true, firebaseUser: user });
 
+    const SUPER_ADMIN_EMAIL = 'shadowbbs@gmail.com';
     try {
-      // Find if this Google UID already belongs to a family
+      // ── Resolve system admin role ─────────────────────────────
+      let adminRole: SystemAdminRole | null = null;
+      if (user.email === SUPER_ADMIN_EMAIL) {
+        adminRole = 'super';
+        // Auto-provision super admin document
+        await setDoc(doc(db, 'systemAdmins', user.uid), {
+          uid: user.uid, email: user.email, role: 'super',
+          inviteUsed: 0, createdAt: new Date().toISOString(), createdBy: 'system',
+        }, { merge: true });
+      } else {
+        const adminSnap = await getDoc(doc(db, 'systemAdmins', user.uid));
+        if (adminSnap.exists()) adminRole = (adminSnap.data() as SystemAdmin).role;
+      }
+
+      // ── Find if this Google UID already belongs to a family ───
       const snap = await getDoc(doc(db, 'userFamilyMap', user.uid));
       if (snap.exists()) {
+        set({ systemAdminRole: adminRole });
         const { familyId } = snap.data() as { familyId: string };
         get().subscribeToFamily(familyId);
+      } else if (adminRole !== null) {
+        // Admins may proceed directly to FamilySetup without invite code
+        set({ isLoading: false, isNewFamily: true, systemAdminRole: adminRole });
       } else {
-        set({ isLoading: false, isNewFamily: true });
+        // Regular new user: must enter invite code
+        set({ isLoading: false, needsInviteCode: true, systemAdminRole: null });
       }
     } catch (err) {
       console.error('[Firebase] setFirebaseUser 失敗:', err);
-      // 確保不卡在 loading，讓使用者看到錯誤提示
-      set({ isLoading: false, isNewFamily: true });
+      set({ isLoading: false, needsInviteCode: true });
     }
   },
 
@@ -1460,5 +1495,114 @@ export const useStore = create<AppState>()((set, get) => ({
 
     await batch.commit();
     // After commit, the onSnapshot listener will update the local state automatically.
+  },
+
+  // ── verifyAndUseSystemInviteCode ─────────────────────────────
+  verifyAndUseSystemInviteCode: async (code) => {
+    const { firebaseUser } = get();
+    if (!firebaseUser) return false;
+    const upperCode = code.trim().toUpperCase();
+    const codeRef = doc(db, 'inviteCodes', upperCode);
+    const codeSnap = await getDoc(codeRef);
+    if (!codeSnap.exists()) return false;
+    const data = codeSnap.data() as InviteCode;
+    if (data.isUsed) return false;
+    await updateDoc(codeRef, {
+      isUsed: true,
+      usedBy: firebaseUser.uid,
+      usedByEmail: firebaseUser.email ?? '',
+      usedAt: new Date().toISOString(),
+    });
+    set({ needsInviteCode: false, isNewFamily: true });
+    return true;
+  },
+
+  // ── generateSystemInviteCode ──────────────────────────────────
+  generateSystemInviteCode: async () => {
+    const { firebaseUser, systemAdminRole } = get();
+    if (!firebaseUser || !systemAdminRole) return null;
+    // Check quota for senior admins
+    if (systemAdminRole === 'senior') {
+      const adminSnap = await getDoc(doc(db, 'systemAdmins', firebaseUser.uid));
+      if (adminSnap.exists()) {
+        const { inviteQuota, inviteUsed = 0 } = adminSnap.data() as SystemAdmin;
+        if (inviteQuota !== undefined && inviteUsed >= inviteQuota) return null;
+      }
+      await updateDoc(doc(db, 'systemAdmins', firebaseUser.uid), { inviteUsed: increment(1) });
+    }
+    // Generate unique code
+    let code = generateInviteCode() + generateInviteCode().slice(0, 2); // 8 chars
+    code = code.toUpperCase();
+    const codeDoc: InviteCode = {
+      code, createdBy: firebaseUser.uid,
+      createdByEmail: firebaseUser.email ?? '',
+      createdAt: new Date().toISOString(),
+      isUsed: false, creatorRole: systemAdminRole,
+    };
+    await setDoc(doc(db, 'inviteCodes', code), codeDoc);
+    return code;
+  },
+
+  // ── listAllFamilies ───────────────────────────────────────────
+  listAllFamilies: async () => {
+    const { systemAdminRole } = get();
+    if (!systemAdminRole) return [];
+    const snap = await getDocs(collection(db, 'families'));
+    return snap.docs.map(d => {
+      const data = d.data() as FamilyDoc & { name?: string; createdAt?: string };
+      const members = (data.users || []).map((u: { name: string; role: string; googleEmail?: string }) => ({
+        name: u.name, role: u.role, googleEmail: u.googleEmail,
+      }));
+      return { familyId: d.id, familyName: data.name || '未命名家庭', members, createdAt: data.createdAt as string | undefined };
+    });
+  },
+
+  // ── listAllInviteCodes ────────────────────────────────────────
+  listAllInviteCodes: async () => {
+    const { systemAdminRole, firebaseUser } = get();
+    if (!systemAdminRole || !firebaseUser) return [];
+    const q = systemAdminRole === 'super'
+      ? collection(db, 'inviteCodes')
+      : query(collection(db, 'inviteCodes'), where('createdBy', '==', firebaseUser.uid));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => d.data() as InviteCode);
+  },
+
+  // ── listSystemAdmins ──────────────────────────────────────────
+  listSystemAdmins: async () => {
+    const { systemAdminRole } = get();
+    if (systemAdminRole !== 'super') return [];
+    const snap = await getDocs(collection(db, 'systemAdmins'));
+    return snap.docs.map(d => d.data() as SystemAdmin);
+  },
+
+  // ── setSystemAdmin ────────────────────────────────────────────
+  setSystemAdmin: async (uid, email, role, quota) => {
+    const { firebaseUser, systemAdminRole } = get();
+    if (systemAdminRole !== 'super' || !firebaseUser) return;
+    const data: SystemAdmin = {
+      uid, email, role,
+      inviteQuota: role === 'senior' ? (quota ?? 10) : undefined,
+      inviteUsed: 0,
+      createdAt: new Date().toISOString(),
+      createdBy: firebaseUser.uid,
+    };
+    if (data.inviteQuota === undefined) delete data.inviteQuota;
+    await setDoc(doc(db, 'systemAdmins', uid), data, { merge: true });
+  },
+
+  // ── removeSystemAdmin ─────────────────────────────────────────
+  removeSystemAdmin: async (uid) => {
+    const { systemAdminRole } = get();
+    if (systemAdminRole !== 'super') return;
+    const { deleteDoc } = await import('firebase/firestore');
+    await deleteDoc(doc(db, 'systemAdmins', uid));
+  },
+
+  // ── updateAdminQuota ──────────────────────────────────────────
+  updateAdminQuota: async (uid, quota) => {
+    const { systemAdminRole } = get();
+    if (systemAdminRole !== 'super') return;
+    await updateDoc(doc(db, 'systemAdmins', uid), { inviteQuota: quota ?? null });
   },
 }));

@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './services/firebase';
 import { useStore } from './store/index';
@@ -7,11 +7,16 @@ import Login from './views/Login';
 import ParentDashboard from './views/ParentDashboard';
 import KidDashboard from './views/KidDashboard';
 import FamilySetup from './views/FamilySetup';
-import { LogOut, Loader } from 'lucide-react';
+import InviteCodeGate from './views/InviteCodeGate';
+import SuperAdminPanel from './views/SuperAdminPanel';
+import { LogOut, Loader, Shield } from 'lucide-react';
 
-const App: React.FC = () => {
+// Inner component so useNavigate works inside Router
+const AppInner: React.FC = () => {
+  const navigate = useNavigate();
   const {
     currentUser, logout, firebaseUser, familyId, isLoading, isNewFamily,
+    needsInviteCode, systemAdminRole,
     nextAllowanceDate, distributeAllowance, generateRoutineQuests,
     setFirebaseUser, themeSettings,
   } = useStore();
@@ -58,8 +63,7 @@ const App: React.FC = () => {
   const isAdmin = currentUser?.role === 'primary_admin' || currentUser?.role === 'co_admin';
 
   return (
-    <Router>
-      <div className="min-h-screen">
+    <div className="min-h-screen">
         {themeSettings?.backgroundUrl && (
           <div
             className="fixed inset-0 -z-50 pointer-events-none transition-all duration-1000"
@@ -73,7 +77,7 @@ const App: React.FC = () => {
             <div className="absolute inset-0 bg-gradient-to-b from-slate-950/20 to-slate-950/80"></div>
           </div>
         )}
-        {currentUser && (
+        {(currentUser || systemAdminRole) && (
           <header className="glass-card mb-6 flex justify-between items-center flex-wrap gap-2"
             style={{ borderRadius: 0, borderTop: 0, borderLeft: 0, borderRight: 0 }}>
             <div className="flex items-center gap-2">
@@ -82,9 +86,20 @@ const App: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 flex-wrap">
-              <div className="text-sm hidden sm:block">
-                身份: <span className="font-bold text-primary">{currentUser.name}</span>
-              </div>
+              {currentUser && (
+                <div className="text-sm hidden sm:block">
+                  身份: <span className="font-bold text-primary">{currentUser.name}</span>
+                </div>
+              )}
+              {systemAdminRole && (
+                <button
+                  className="btn btn-ghost flex items-center gap-1 text-amber-400"
+                  style={{ padding: '0.5rem' }}
+                  onClick={() => navigate('/admin')}
+                >
+                  <Shield size={15} /> 管理員面板
+                </button>
+              )}
               <button className="btn btn-ghost" style={{ padding: '0.5rem' }} onClick={() => logout()}>
                 <LogOut size={16} /> 登出
               </button>
@@ -98,19 +113,26 @@ const App: React.FC = () => {
               path="/"
               element={
                 !firebaseUser ? <Login /> :
+                needsInviteCode ? <InviteCodeGate /> :
                 isNewFamily ? <FamilySetup /> :
-                !familyId ? <Login /> :
+                !familyId ? (systemAdminRole ? <Navigate to="/admin" /> : <Login />) :
                 !currentUser ? <Login /> :
                 isAdmin ? <Navigate to="/parent" /> : <Navigate to="/kid" />
               }
             />
             <Route path="/parent/*" element={isAdmin ? <ParentDashboard /> : <Navigate to="/" />} />
             <Route path="/kid/*" element={currentUser?.role === 'kid' ? <KidDashboard /> : <Navigate to="/" />} />
+            <Route path="/admin/*" element={systemAdminRole ? <SuperAdminPanel /> : <Navigate to="/" />} />
           </Routes>
         </main>
       </div>
-    </Router>
   );
 };
+
+const App: React.FC = () => (
+  <Router>
+    <AppInner />
+  </Router>
+);
 
 export default App;
