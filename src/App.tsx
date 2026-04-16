@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from './services/firebase';
 import { useStore } from './store/index';
@@ -14,6 +14,7 @@ import { LogOut, Loader, Shield } from 'lucide-react';
 // Inner component so useNavigate works inside Router
 const AppInner: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const {
     currentUser, logout, firebaseUser, familyId, isLoading, isNewFamily,
     needsInviteCode, systemAdminRole,
@@ -61,6 +62,13 @@ const AppInner: React.FC = () => {
   }
 
   const isAdmin = currentUser?.role === 'primary_admin' || currentUser?.role === 'co_admin';
+  const isAdminRoute = location.pathname.startsWith('/admin');
+
+  // Show the global header only for:
+  // 1. Pure system admins (no family currentUser) — they need logout + admin panel button
+  // 2. System admins on the /admin route — even if they have a family
+  // Parents with a family get their own top bar inside ParentDashboard (no double header)
+  const showGlobalHeader = systemAdminRole && (!currentUser || isAdminRoute);
 
   return (
     <div className="min-h-screen">
@@ -77,22 +85,20 @@ const AppInner: React.FC = () => {
             <div className="absolute inset-0 bg-gradient-to-b from-slate-950/20 to-slate-950/80"></div>
           </div>
         )}
-        {/* Header: shown for parents/admins only — kids have their own compact top bar */}
-        {(currentUser || systemAdminRole) && currentUser?.role !== 'kid' && (
-          <header className="glass-card mb-6 flex justify-between items-center flex-wrap gap-2"
+        {/* Global header: only for system admins (pure or on /admin route).
+            Regular parents use ParentDashboard's own top bar to avoid double headers. */}
+        {showGlobalHeader && (
+          <header className="glass-card mb-4 flex justify-between items-center flex-wrap gap-2"
             style={{ borderRadius: 0, borderTop: 0, borderLeft: 0, borderRight: 0 }}>
             <div className="flex items-center gap-2">
               <span className="text-xl">💰</span>
               <h1 className="text-lg font-bold">家庭預算系統</h1>
             </div>
-
             <div className="flex items-center gap-2 flex-wrap">
-              {currentUser && (
-                <div className="text-sm hidden sm:block">
-                  身份: <span className="font-bold text-primary">{currentUser.name}</span>
-                </div>
+              {firebaseUser?.email && (
+                <div className="text-xs text-muted hidden sm:block">{firebaseUser.email}</div>
               )}
-              {systemAdminRole && (
+              {!isAdminRoute && (
                 <button
                   className="btn btn-ghost flex items-center gap-1 text-amber-400"
                   style={{ padding: '0.5rem' }}
@@ -108,8 +114,9 @@ const AppInner: React.FC = () => {
           </header>
         )}
 
-        {/* Kids use full-screen layout; parent/admin use the standard container */}
-        <main className={currentUser?.role === 'kid' ? '' : 'container'}>
+        {/* Kids: full-screen. /admin: no container (SuperAdminPanel manages its own width).
+            Parents/others: standard 680px container. */}
+        <main className={currentUser?.role === 'kid' || isAdminRoute ? '' : 'container'}>
           <Routes>
             <Route
               path="/"

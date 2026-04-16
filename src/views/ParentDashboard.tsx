@@ -1,10 +1,11 @@
 import React, { useState, useMemo, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useStore, getNextAllowanceDate } from '../store/index';
 import type { AllowancePeriod, User } from '../store/index';
 import {
   Eye, EyeOff, Trash2, Edit2, PlusCircle, Check, X,
   RefreshCw, TrendingUp, Image as ImageIcon, ChevronDown,
-  ChevronUp, Copy, ArrowRightLeft, Save, Lock,
+  ChevronUp, Copy, ArrowRightLeft, Save, Lock, LogOut, Shield,
 } from 'lucide-react';
 import { GamificationAdmin } from './GamificationAdmin';
 import { EmojiInput } from '../components/EmojiInput';
@@ -33,7 +34,8 @@ const Section: React.FC<{ emoji: string; title: string; children: React.ReactNod
 // ─── Main dashboard ───────────────────────────────────────────────────────────
 const ParentDashboard: React.FC = () => {
   const {
-    currentUser, users, envelopes, transactions, quests,
+    currentUser, logout, systemAdminRole,
+    users, envelopes, transactions, quests,
     routineQuests = [], expenseCategories = [],
     addExpenseCategory, updateExpenseCategory, deleteExpenseCategory,
     approveQuestWithFeedback, rejectQuest, delayQuest,
@@ -56,6 +58,8 @@ const ParentDashboard: React.FC = () => {
     exportFamilyData,
     importFamilyData,
   } = useStore();
+
+  const navigate = useNavigate();
 
   // ── Tab state ──────────────────────────────────────────────────────────────
   const [parentTab, setParentTab] = useState<'pending' | 'quests' | 'family' | 'settings'>('pending');
@@ -1138,21 +1142,31 @@ const ParentDashboard: React.FC = () => {
   return (
     <div className="flex flex-col min-h-screen">
       {/* Top bar */}
-      <div className="flex items-center gap-3 px-4 pt-3 pb-2">
+      <div className="flex items-center gap-2 px-4 pt-3 pb-2">
         <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-info flex items-center justify-center text-white font-black text-lg flex-shrink-0">
           {currentUser.name.charAt(0)}
         </div>
-        <div>
-          <div className="font-black text-base">{familyName || '我的家庭'}</div>
+        <div className="min-w-0">
+          <div className="font-black text-base truncate">{familyName || '我的家庭'}</div>
           <div className="text-xs text-muted">家長主控台</div>
         </div>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2 flex-shrink-0">
           <DigitalClock timezoneOffset={timezoneOffset} onChangeTimezone={updateTimezone} isAdmin={true} />
           {pendingCount > 0 && (
-            <button onClick={() => setParentTab('pending')} className="flex items-center gap-1.5 bg-amber-400/10 border border-amber-400/20 text-amber-400 text-xs font-bold px-3 py-1.5 rounded-full">
-              <span>🔔</span> {pendingCount} 待審核
+            <button onClick={() => setParentTab('pending')} className="flex items-center gap-1.5 bg-amber-400/10 border border-amber-400/20 text-amber-400 text-xs font-bold px-2.5 py-1.5 rounded-full">
+              <span>🔔</span> {pendingCount}
             </button>
           )}
+          {systemAdminRole && (
+            <button onClick={() => navigate('/admin')} title="管理員面板"
+              className="p-2 rounded-xl bg-amber-400/10 border border-amber-400/20 text-amber-400 hover:bg-amber-400/20 transition-colors">
+              <Shield size={16} />
+            </button>
+          )}
+          <button onClick={() => logout()} title="登出"
+            className="p-2 rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:text-white hover:bg-white/10 transition-colors">
+            <LogOut size={16} />
+          </button>
         </div>
       </div>
 
