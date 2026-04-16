@@ -159,6 +159,7 @@ const KidDashboard: React.FC = () => {
 
   const weekQuests = useMemo(() => myQuests.filter(q => {
     if (!q.title.startsWith('(例行)')) return false;
+    if (q.status === 'failed') return false; // 已按「加油」確認的失敗任務不佔版面
     const start = new Date(weekStartStr);
     const end = new Date(start); end.setDate(start.getDate() + 6); end.setHours(23, 59, 59, 999);
     const created = q.createdAt ? new Date(q.createdAt) : null;
@@ -173,7 +174,7 @@ const KidDashboard: React.FC = () => {
 
     // 1. All completed / rejected / delayed quests for this kid
     myQuests
-      .filter(q => q.status === 'completed' || q.status === 'rejected' || q.status === 'delayed')
+      .filter(q => q.status === 'completed' || q.status === 'rejected' || q.status === 'delayed' || q.status === 'failed')
       .forEach(q => {
         entries.push({
           id: `quest-${q.id}`,
@@ -457,7 +458,7 @@ const KidDashboard: React.FC = () => {
                   if (entry.type === 'quest') {
                     return (
                       <div key={entry.id} className="py-2.5 flex items-start gap-3">
-                        <span className="text-xl flex-shrink-0 mt-0.5">{entry.feedbackEmoji || (entry.status === 'completed' ? '✅' : entry.status === 'rejected' ? '❌' : '⏳')}</span>
+                        <span className="text-xl flex-shrink-0 mt-0.5">{entry.feedbackEmoji || (entry.status === 'completed' ? '✅' : entry.status === 'rejected' ? '❌' : entry.status === 'failed' ? '💀' : '⏳')}</span>
                         <div className="flex-1 min-w-0">
                           <div className="text-xs font-bold text-muted truncate">{entry.icon || '📜'} {entry.title}</div>
                           {entry.feedbackComment && (
@@ -474,6 +475,7 @@ const KidDashboard: React.FC = () => {
                             </>}
                             {entry.status === 'rejected' && <span className="text-red-400">❌ 任務被拒絕</span>}
                             {entry.status === 'delayed' && <span className="text-orange-400">⏳ 任務延期</span>}
+                            {entry.status === 'failed' && <span className="text-red-400">💀 任務失敗</span>}
                           </div>
                         </div>
                         <div className="text-[9px] text-slate-500 flex-shrink-0 mt-0.5">{entry.timestamp ? new Date(entry.timestamp).toLocaleDateString('zh-TW') : ''}</div>
