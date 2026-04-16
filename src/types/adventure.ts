@@ -151,6 +151,64 @@ export interface ActiveExpedition {
   result?: ExpeditionResult;
 }
 
+// ── Admin-managed config types ────────────────────────────────────────────────
+// Stored in Firestore: adventureConfig/{configType}
+// Super admin (and optionally senior admin) can CRUD these via the admin panel.
+
+export interface AdventureConfigItem {
+  id: string;
+  hidden: boolean; // true = not shown to kids
+}
+
+export interface ManagedShopItem extends AdventureConfigItem {
+  name: string;
+  category: ShopItemCategory;
+  emoji: string;
+  description: string;
+  basePrice: number;
+  discountTiers: { minSavings: number; discountPct: number }[];
+}
+
+export interface ManagedPetSpecies extends AdventureConfigItem {
+  speciesKey: PetSpecies; // matches PetSpecies union
+  name: string;
+  emoji: string;
+  desc: string;
+  colorFrom: string; // Tailwind gradient from-* class
+  colorTo: string;   // Tailwind gradient to-* class
+}
+
+export interface ManagedDestination extends AdventureConfigItem {
+  emoji: string;
+  name: string;
+  desc: string;
+  durationHours: number;
+  requiredLevel: number;
+  baseGemRewardMin: number;
+  baseGemRewardMax: number;
+  baseExpRewardMin: number;
+  baseExpRewardMax: number;
+  successRate: number; // base %, 1–99
+}
+
+export interface ManagedAsset extends AdventureConfigItem {
+  name: string;
+  type: AssetType;
+  symbol: string;
+  emoji: string;
+  baseFeeRate: number; // %
+  discountTiers: { minSavings: number; discountPct: number }[];
+}
+
+export type AdventureConfigType = 'shopItems' | 'petSpecies' | 'destinations' | 'assets';
+
+export interface AdventureConfigDoc {
+  allowSeniorEdit: boolean; // reserved: when true, senior admins can also edit
+  items: AdventureConfigItem[];
+  updatedAt: string;
+  updatedBy?: string; // Firebase UID of last editor
+}
+
 // ── Aggregated adventure profile (stored per kid) ─────────────────────────────
 export interface AdventureProfile {
   kidId: string;

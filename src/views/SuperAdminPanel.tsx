@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Shield, Key, Plus, Trash2, RefreshCw,
-  Copy, Check, Crown, Star, Home, ChevronDown, ChevronUp,
+  Copy, Check, Crown, Star, Home, ChevronDown, ChevronUp, Swords,
 } from 'lucide-react';
 import { useStore } from '../store/index';
 import type { FamilySummary, InviteCode, SystemAdmin, SystemAdminRole } from '../store/index';
+import AdventureAdminSection from './adventure/AdventureAdminSection';
 
-type AdminTab = 'families' | 'invites' | 'admins';
+type AdminTab = 'families' | 'invites' | 'admins' | 'adventure';
 
 const ROLE_LABEL: Record<SystemAdminRole, string> = {
   super: '⭐ 超級管理者',
@@ -106,8 +107,9 @@ const SuperAdminPanel: React.FC = () => {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 flex-wrap">
-        {([['families', Home, '家庭總覽'], ['invites', Key, '邀請碼'], ['admins', Crown, '管理者']] as const).map(([id, Icon, label]) => {
+        {([['families', Home, '家庭總覽'], ['invites', Key, '邀請碼'], ['admins', Crown, '管理者'], ['adventure', Swords, '冒險設定']] as const).map(([id, Icon, label]) => {
           if (id === 'admins' && systemAdminRole !== 'super') return null;
+          if (id === 'adventure' && systemAdminRole !== 'super') return null;
           return (
             <button
               key={id}
@@ -214,6 +216,20 @@ const SuperAdminPanel: React.FC = () => {
       )}
 
       {/* ── Tab: Admins (super only) ──────────────────── */}
+      {/* ── Tab: Adventure Config (super only) ───────────── */}
+      {tab === 'adventure' && systemAdminRole === 'super' && (
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center gap-3 pb-1 border-b border-white/10">
+            <Swords size={18} className="text-amber-400" />
+            <div>
+              <h2 className="font-black text-base">冒險區設定</h2>
+              <p className="text-xs text-muted">管理小孩冒險區所有可設定的內容（商品、物種、目的地、投資資產）</p>
+            </div>
+          </div>
+          <AdventureAdminSection isSuperAdmin={systemAdminRole === 'super'} />
+        </div>
+      )}
+
       {tab === 'admins' && systemAdminRole === 'super' && (
         <div className="flex flex-col gap-6">
           {/* Add admin form */}

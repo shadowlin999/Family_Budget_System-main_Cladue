@@ -179,6 +179,10 @@ interface AppState {
   setSystemAdmin: (uid: string, email: string, role: SystemAdminRole, quota?: number) => Promise<void>;
   removeSystemAdmin: (uid: string) => Promise<void>;
   updateAdminQuota: (uid: string, quota: number | undefined) => Promise<void>;
+
+  // ── Adventure Config (super/senior admin) ─────────────────────────────
+  getAdventureConfigDoc: (docId: string) => Promise<Record<string, unknown> | null>;
+  setAdventureConfigDoc: (docId: string, data: Record<string, unknown>) => Promise<void>;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1615,5 +1619,24 @@ export const useStore = create<AppState>()((set, get) => ({
     const { systemAdminRole } = get();
     if (systemAdminRole !== 'super') return;
     await updateDoc(doc(db, 'systemAdmins', uid), { inviteQuota: quota ?? null });
+  },
+
+  // ── getAdventureConfigDoc ─────────────────────────────────────
+  getAdventureConfigDoc: async (docId) => {
+    try {
+      const snap = await getDoc(doc(db, 'adventureConfig', docId));
+      if (!snap.exists()) return null;
+      return snap.data() as Record<string, unknown>;
+    } catch (e) {
+      console.warn('[AdventureConfig] read failed:', e);
+      return null;
+    }
+  },
+
+  // ── setAdventureConfigDoc ─────────────────────────────────────
+  setAdventureConfigDoc: async (docId, data) => {
+    const { systemAdminRole } = get();
+    if (!systemAdminRole) return; // must be some kind of admin
+    await setDoc(doc(db, 'adventureConfig', docId), data);
   },
 }));
