@@ -97,8 +97,11 @@ function calcActualSuccess(base: number, abilities: typeof DEMO_PET_ABILITIES): 
   return Math.min(95, base + bonus);
 }
 
+// Snapshot taken at module load time — this is a demo-only component with static data
+const _NOW = Date.now();
+
 function calcTimeLeft(returnsAt: string): string {
-  const ms = new Date(returnsAt).getTime() - Date.now();
+  const ms = new Date(returnsAt).getTime() - _NOW;
   if (ms <= 0) return '已回來！';
   const h = Math.floor(ms / 3600000);
   const m = Math.floor((ms % 3600000) / 60000);
@@ -120,7 +123,6 @@ const AdventurePortal: React.FC = () => {
   const [selectedDest, setSelectedDest] = useState<ExpeditionDestination | null>(null);
   const petLevel = DEMO_PET_LEVEL;
   const abilities = DEMO_PET_ABILITIES;
-
   return (
     <div className="flex flex-col gap-5">
       {/* Header */}
@@ -161,7 +163,7 @@ const AdventurePortal: React.FC = () => {
             <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
               <div className="h-full bg-gradient-to-r from-violet-400 to-indigo-400 rounded-full"
                 style={{
-                  width: `${Math.min(100, (Date.now() - new Date(DEMO_EXPEDITION.startedAt).getTime()) /
+                  width: `${Math.min(100, (_NOW - new Date(DEMO_EXPEDITION.startedAt).getTime()) /
                     (new Date(DEMO_EXPEDITION.returnsAt).getTime() - new Date(DEMO_EXPEDITION.startedAt).getTime()) * 100)}%`
                 }} />
             </div>

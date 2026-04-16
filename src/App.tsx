@@ -77,7 +77,8 @@ const AppInner: React.FC = () => {
             <div className="absolute inset-0 bg-gradient-to-b from-slate-950/20 to-slate-950/80"></div>
           </div>
         )}
-        {(currentUser || systemAdminRole) && (
+        {/* Header: shown for parents/admins only — kids have their own compact top bar */}
+        {(currentUser || systemAdminRole) && currentUser?.role !== 'kid' && (
           <header className="glass-card mb-6 flex justify-between items-center flex-wrap gap-2"
             style={{ borderRadius: 0, borderTop: 0, borderLeft: 0, borderRight: 0 }}>
             <div className="flex items-center gap-2">
@@ -107,7 +108,8 @@ const AppInner: React.FC = () => {
           </header>
         )}
 
-        <main className="container">
+        {/* Kids use full-screen layout; parent/admin use the standard container */}
+        <main className={currentUser?.role === 'kid' ? '' : 'container'}>
           <Routes>
             <Route
               path="/"
