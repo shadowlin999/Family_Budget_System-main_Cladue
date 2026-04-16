@@ -253,19 +253,25 @@ export const useStore = create<AppState>()((set, get) => ({
     set({ isLoading: true, firebaseUser: user });
 
     const SUPER_ADMIN_EMAIL = 'shadowbbs@gmail.com';
+    const isSuperAdmin = user.email === SUPER_ADMIN_EMAIL;
     try {
       // ── Resolve system admin role ─────────────────────────────
       let adminRole: SystemAdminRole | null = null;
-      if (user.email === SUPER_ADMIN_EMAIL) {
+      if (isSuperAdmin) {
         adminRole = 'super';
-        // Auto-provision super admin document
-        await setDoc(doc(db, 'systemAdmins', user.uid), {
+        // Best-effort auto-provision — fire-and-forget so rules errors don't block login
+        setDoc(doc(db, 'systemAdmins', user.uid), {
           uid: user.uid, email: user.email, role: 'super',
           inviteUsed: 0, createdAt: new Date().toISOString(), createdBy: 'system',
-        }, { merge: true });
+        }, { merge: true }).catch(e => console.warn('[Admin] auto-provision failed (non-blocking):', e));
       } else {
-        const adminSnap = await getDoc(doc(db, 'systemAdmins', user.uid));
-        if (adminSnap.exists()) adminRole = (adminSnap.data() as SystemAdmin).role;
+        // Wrap in try-catch: if systemAdmins rules not yet deployed, treat as regular user
+        try {
+          const adminSnap = await getDoc(doc(db, 'systemAdmins', user.uid));
+          if (adminSnap.exists()) adminRole = (adminSnap.data() as SystemAdmin).role;
+        } catch {
+          console.warn('[Admin] systemAdmins read failed (rules may not be deployed yet)');
+        }
       }
 
       // ── Find if this Google UID already belongs to a family ───
@@ -283,7 +289,12 @@ export const useStore = create<AppState>()((set, get) => ({
       }
     } catch (err) {
       console.error('[Firebase] setFirebaseUser 失敗:', err);
-      set({ isLoading: false, needsInviteCode: true });
+      // Super admin must never be blocked by invite code gate, even on error
+      if (isSuperAdmin) {
+        set({ isLoading: false, isNewFamily: true, systemAdminRole: 'super' });
+      } else {
+        set({ isLoading: false, needsInviteCode: true });
+      }
     }
   },
 

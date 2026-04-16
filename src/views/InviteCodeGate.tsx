@@ -1,9 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { KeyRound, ArrowRight, LogOut } from 'lucide-react';
 import { useStore } from '../store/index';
 
+const SUPER_ADMIN_EMAIL = 'shadowbbs@gmail.com';
+
 const InviteCodeGate: React.FC = () => {
   const { verifyAndUseSystemInviteCode, logout, firebaseUser } = useStore();
+
+  // Safety net: super admin should never land here; auto-bypass if they do
+  useEffect(() => {
+    if (firebaseUser?.email === SUPER_ADMIN_EMAIL) {
+      useStore.setState({ needsInviteCode: false, isNewFamily: true, systemAdminRole: 'super' });
+    }
+  }, [firebaseUser]);
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
