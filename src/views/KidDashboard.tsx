@@ -7,119 +7,7 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import type { DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AdventureZone — mini-game portal (games to be implemented)
-// ─────────────────────────────────────────────────────────────────────────────
-interface MiniGame {
-  id: string;
-  emoji: string;
-  name: string;
-  desc: string;
-  requiredLevel: number;
-  gemCost: number;
-  color: string; // tailwind gradient classes
-}
-
-const MINI_GAMES: MiniGame[] = [
-  { id: 'memory', emoji: '🃏', name: '記憶翻牌', desc: '翻牌配對，考驗你的記憶力！', requiredLevel: 1, gemCost: 3, color: 'from-blue-500/30 to-cyan-500/30' },
-  { id: 'quiz', emoji: '🧩', name: '寶箱猜謎', desc: '答對題目就能開寶箱！', requiredLevel: 3, gemCost: 5, color: 'from-violet-500/30 to-purple-500/30' },
-  { id: 'wheel', emoji: '🎡', name: '幸運轉盤', desc: '旋轉命運之輪，等待好運降臨！', requiredLevel: 5, gemCost: 10, color: 'from-amber-500/30 to-orange-500/30' },
-  { id: 'blast', emoji: '💎', name: '寶石大爆炸', desc: '消除方塊連鎖爆炸，贏取寶石！', requiredLevel: 8, gemCost: 15, color: 'from-fuchsia-500/30 to-pink-500/30' },
-  { id: 'run', emoji: '🏃', name: '冒險闖關', desc: '闖過重重關卡，展現你的勇氣！', requiredLevel: 10, gemCost: 20, color: 'from-green-500/30 to-emerald-500/30' },
-  { id: 'puzzle', emoji: '🔮', name: '魔法拼圖', desc: '拼出魔法圖案，解鎖神秘獎勵！', requiredLevel: 15, gemCost: 30, color: 'from-rose-500/30 to-red-500/30' },
-];
-
-const AdventureZone: React.FC<{ level: number; gems: number }> = ({ level, gems }) => (
-  <div className="animate-in zoom-in-95 fade-in duration-500 flex flex-col gap-6">
-    {/* Header */}
-    <div className="text-center">
-      <div className="w-16 h-16 bg-gradient-to-br from-amber-400/20 to-orange-500/20 rounded-full flex items-center justify-center mb-2 mx-auto border border-amber-400/20">
-        <Swords size={36} className="text-amber-400" />
-      </div>
-      <h3 className="text-2xl font-black">冒險區</h3>
-      <p className="text-sm text-muted">用寶石解鎖小遊戲，挑戰自己贏取獎勵！</p>
-    </div>
-
-    {/* Player stats */}
-    <div className="flex justify-center gap-4">
-      <div className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-xl border border-white/10">
-        <Target size={14} className="text-primary" />
-        <span className="text-sm font-bold">Lv.{level}</span>
-      </div>
-      <div className="flex items-center gap-2 bg-white/5 px-4 py-2 rounded-xl border border-white/10">
-        <Sparkles size={14} className="text-amber-400" fill="currentColor" />
-        <span className="text-sm font-bold text-amber-400">{gems} 寶石</span>
-      </div>
-    </div>
-
-    {/* Game grid */}
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      {MINI_GAMES.map(game => {
-        const levelOk = level >= game.requiredLevel;
-        const gemsOk = gems >= game.gemCost;
-        const canPlay = levelOk && gemsOk;
-        return (
-          <div
-            key={game.id}
-            className={`relative overflow-hidden rounded-2xl border transition-all
-              ${canPlay
-                ? 'border-white/20 hover:border-white/40 hover:shadow-lg cursor-pointer'
-                : 'border-white/10 opacity-70'
-              } bg-gradient-to-br ${game.color}`}
-          >
-            {/* Coming Soon ribbon */}
-            <div className="absolute top-2 right-2 bg-slate-900/70 text-[10px] font-bold px-2 py-0.5 rounded-full text-muted border border-white/10">
-              即將推出
-            </div>
-
-            <div className="p-5 flex flex-col gap-3">
-              <div className="flex items-center gap-3">
-                <span className="text-4xl drop-shadow-lg">{game.emoji}</span>
-                <div>
-                  <div className="font-black text-base leading-tight">{game.name}</div>
-                  <div className="text-xs text-muted mt-0.5">{game.desc}</div>
-                </div>
-              </div>
-
-              {/* Requirements */}
-              <div className="flex gap-2 flex-wrap">
-                <span className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-lg
-                  ${levelOk ? 'bg-green-500/20 text-green-400' : 'bg-red-500/15 text-red-400'}`}>
-                  <Target size={11} />
-                  Lv.{game.requiredLevel} {levelOk ? '✓' : `（差 ${game.requiredLevel - level} 級）`}
-                </span>
-                <span className={`flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-lg
-                  ${gemsOk ? 'bg-amber-500/20 text-amber-400' : 'bg-red-500/15 text-red-400'}`}>
-                  <Sparkles size={11} fill="currentColor" />
-                  {game.gemCost} 寶石 {gemsOk ? '✓' : `（差 ${game.gemCost - gems}）`}
-                </span>
-              </div>
-
-              {/* Play button */}
-              <button
-                disabled
-                className={`w-full py-2.5 rounded-xl font-black text-sm flex items-center justify-center gap-2 transition-all
-                  ${canPlay
-                    ? 'bg-white/20 text-white border border-white/30'
-                    : 'bg-white/5 text-muted border border-white/10 cursor-not-allowed'
-                  }`}
-              >
-                {canPlay ? <><Swords size={15} /> 進入遊戲</> : <><Lock size={13} /> 條件未達成</>}
-              </button>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-
-    {/* Footer hint */}
-    <div className="text-center text-xs text-muted bg-white/5 rounded-xl py-3 px-4 border border-white/10">
-      🚧 小遊戲正在開發中，達成條件後就能第一個玩到！<br />
-      繼續完成任務、提升等級，準備好迎接冒險吧！
-    </div>
-  </div>
-);
+import AdventureZone from './adventure/AdventureZone';
 
 const SortableSection: React.FC<{ id: string; emoji: string; title: string; defaultOpen?: boolean; isDraggable?: boolean; children: React.ReactNode }> = ({ id, emoji, title, defaultOpen = true, isDraggable = true, children }) => {
   const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -1027,7 +915,7 @@ const KidDashboard: React.FC = () => {
         )}
 
         {activeTab === 'adventure' && (
-          <AdventureZone level={currentUser.level} gems={currentUser.gems || 0} />
+          <AdventureZone kidName={currentUser.name} />
         )}
       </div>
 
