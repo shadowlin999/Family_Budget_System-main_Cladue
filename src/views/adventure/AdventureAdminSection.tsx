@@ -167,16 +167,30 @@ const FieldRow: React.FC<{ label: string; children: React.ReactNode; span2?: boo
   </div>
 );
 
-const SaveBar: React.FC<{ dirty: boolean; saving: boolean; onSave: () => void; onReset: () => void }> = ({ dirty, saving, onSave, onReset }) => (
-  <div className={`flex items-center justify-between gap-3 p-3 rounded-xl border backdrop-blur-md transition-all mt-2
-    ${dirty ? 'bg-indigo-500/10 border-indigo-400/30' : 'bg-white/5 border-white/10 opacity-50 pointer-events-none'}`}>
-    <span className="text-xs font-bold text-indigo-300">{dirty ? '⚠️ 有未儲存的變更' : '✓ 已與 Firestore 同步'}</span>
-    <div className="flex gap-2">
-      <button onClick={onReset} className="btn btn-ghost text-xs py-1.5 px-3">重設預設值</button>
-      <button onClick={onSave} disabled={saving}
-        className="btn btn-primary text-xs py-1.5 px-3 flex items-center gap-1.5">
-        <Save size={13} />{saving ? '儲存中...' : '儲存到 Firestore'}
-      </button>
+const SaveBar: React.FC<{
+  dirty: boolean; saving: boolean; error: string | null;
+  onSave: () => void; onReset: () => void;
+}> = ({ dirty, saving, error, onSave, onReset }) => (
+  <div className="flex flex-col gap-2 mt-2">
+    {error && (
+      <div className="text-xs text-red-300 bg-red-500/10 border border-red-400/30 rounded-xl px-3 py-2.5 leading-relaxed">
+        ❌ <strong>儲存失敗：</strong>{error}
+        <br />
+        <span className="text-[10px] text-red-400/70">
+          提示：請確認 Firebase Console 的 Firestore 規則已包含 adventureConfig 集合，或查看瀏覽器 Console 取得詳細錯誤。
+        </span>
+      </div>
+    )}
+    <div className={`flex items-center justify-between gap-3 p-3 rounded-xl border backdrop-blur-md transition-all
+      ${dirty ? 'bg-indigo-500/10 border-indigo-400/30' : 'bg-white/5 border-white/10 opacity-50 pointer-events-none'}`}>
+      <span className="text-xs font-bold text-indigo-300">{dirty ? '⚠️ 有未儲存的變更' : '✓ 已與 Firestore 同步'}</span>
+      <div className="flex gap-2">
+        <button onClick={onReset} className="btn btn-ghost text-xs py-1.5 px-3">重設預設值</button>
+        <button onClick={onSave} disabled={saving}
+          className="btn btn-primary text-xs py-1.5 px-3 flex items-center gap-1.5">
+          <Save size={13} />{saving ? '儲存中...' : '儲存到 Firestore'}
+        </button>
+      </div>
     </div>
   </div>
 );
@@ -522,6 +536,7 @@ const AdventureAdminSection: React.FC<{ isSuperAdmin: boolean }> = ({ isSuperAdm
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving,  setIsSaving]  = useState(false);
   const [dirty,     setDirty]     = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // State per category
   const [sections,    setSectionsRaw]    = useState<SectionConfig[]>(DEFAULT_SECTIONS);
@@ -555,6 +570,7 @@ const AdventureAdminSection: React.FC<{ isSuperAdmin: boolean }> = ({ isSuperAdm
   // Load from Firestore on tab change
   const load = useCallback(async () => {
     setIsLoading(true);
+    setSaveError(null);
     try {
       const data = await getAdventureConfigDoc(docId);
       if (!data) return;
@@ -579,6 +595,7 @@ const AdventureAdminSection: React.FC<{ isSuperAdmin: boolean }> = ({ isSuperAdm
   // Save current tab to Firestore
   const save = async () => {
     setIsSaving(true);
+    setSaveError(null);
     try {
       let payload: Record<string, unknown>;
       if (configTab === 'sections') {
@@ -591,6 +608,10 @@ const AdventureAdminSection: React.FC<{ isSuperAdmin: boolean }> = ({ isSuperAdm
       }
       await setAdventureConfigDoc(docId, payload);
       setDirty(false);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[AdventureAdmin] save failed:', e);
+      setSaveError(msg);
     } finally {
       setIsSaving(false);
     }
@@ -650,7 +671,7 @@ const AdventureAdminSection: React.FC<{ isSuperAdmin: boolean }> = ({ isSuperAdm
         </>
       )}
 
-      <SaveBar dirty={dirty} saving={isSaving} onSave={save} onReset={reset} />
+      <SaveBar dirty={dirty} saving={isSaving} error={saveError} onSave={save} onReset={reset} />
     </div>
   );
 };
