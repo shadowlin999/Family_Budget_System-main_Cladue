@@ -151,6 +151,24 @@ export interface ActiveExpedition {
   result?: ExpeditionResult;
 }
 
+// ── Adventure sub-section config (admin-controlled) ──────────────────────────
+export type SectionKey = 'base' | 'pets' | 'shop' | 'invest' | 'portal';
+export type SectionStatus = 'visible' | 'disabled' | 'hidden';
+
+export interface SectionConfig {
+  key: SectionKey;
+  status: SectionStatus; // visible = normal; disabled = greyed-out; hidden = not shown
+  name: string;          // display name (editable)
+  desc: string;          // subtitle description (editable)
+}
+
+// Stored in adventureConfig/sections
+export interface SectionConfigDoc {
+  sections: SectionConfig[];
+  updatedAt: string;
+  updatedBy?: string;
+}
+
 // ── Admin-managed config types ────────────────────────────────────────────────
 // Stored in Firestore: adventureConfig/{configType}
 // Super admin (and optionally senior admin) can CRUD these via the admin panel.
@@ -166,7 +184,18 @@ export interface ManagedShopItem extends AdventureConfigItem {
   emoji: string;
   description: string;
   basePrice: number;
+  /** @deprecated per-item tiers removed; global tiers stored in ShopConfigDoc */
+  discountTiers?: { minSavings: number; discountPct: number }[];
+}
+
+/** Top-level shop config document (adventureConfig/shopItems) */
+export interface ShopConfigDoc {
+  allowSeniorEdit: boolean;
+  items: ManagedShopItem[];
+  /** Single shared discount tier list applied to ALL shop items */
   discountTiers: { minSavings: number; discountPct: number }[];
+  updatedAt: string;
+  updatedBy?: string;
 }
 
 export interface ManagedPetSpecies extends AdventureConfigItem {
