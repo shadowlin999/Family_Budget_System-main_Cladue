@@ -98,6 +98,16 @@ const AppInner: React.FC = () => {
               {firebaseUser?.email && (
                 <div className="text-xs text-muted hidden sm:block">{firebaseUser.email}</div>
               )}
+              {/* Back to parent dashboard — shown when a parent-admin is in /admin */}
+              {isAdminRoute && isAdmin && (
+                <button
+                  className="btn btn-ghost flex items-center gap-1"
+                  style={{ padding: '0.5rem' }}
+                  onClick={() => navigate('/parent')}
+                >
+                  ← 返回家長面板
+                </button>
+              )}
               {!isAdminRoute && (
                 <button
                   className="btn btn-ghost flex items-center gap-1 text-amber-400"
