@@ -34,5 +34,6 @@ export interface FamilyDoc {
   };
   timezoneOffset?: number; // UTC offset in minutes, e.g. 480 = UTC+8
   currencySymbol?: string; // e.g. 'NT$', '$', '¥', '€', 'HK$', 'CN¥'
+  kidTheme?: string;       // 'pilot' | 'dark' | future themes
   createdAt?: Timestamp;
 }

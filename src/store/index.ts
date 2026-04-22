@@ -10,7 +10,7 @@ import type { Unsubscribe } from 'firebase/firestore';
 import { db } from '../services/firebase';
 
 // ── Type imports ───────────────────────────────────────────────────────────────
-import type { Role, AllowanceSettings, User, OwnedBoxInstance } from '../types/user';
+import type { Role, AllowanceSettings, User, OwnedBoxInstance, SpendingLicense } from '../types/user';
 import type { QuestFeedback, Quest, RoutineQuest } from '../types/quest';
 import type { EnvelopeType, ExpenseCategory, Envelope, Transaction } from '../types/envelope';
 import type {
@@ -19,11 +19,14 @@ import type {
 } from '../types/gamification';
 import type { AllowancePeriod, FamilyDoc } from '../types/family';
 import type { SystemAdmin, SystemAdminRole, InviteCode, FamilySummary } from '../types/admin';
+import type { AssetType, AssetPrice, PriceFetchError, GemRates, ApiKeys, ManagedAsset } from '../types/adventure';
 
 // ── Domain function imports ────────────────────────────────────────────────────
 import { getNextAllowanceDate } from '../domain/allowance';
 import { applyUserRewards } from '../domain/level';
 import { generateInviteCode } from '../domain/invite';
+import { spendEnergy, buildLicenseSnapshot } from '../domain/energy';
+import { buildBackupPayload, buildBackupFilename, parseBackupPayload, BackupParseError } from '../domain/backup';
 
 // ── Re-export types for backward compatibility with views ──────────────────────
 export type { Role, AllowanceSettings, User, OwnedBoxInstance } from '../types/user';
@@ -70,15 +73,29 @@ interface AppState {
   quests: Quest[];
   routineQuests: RoutineQuest[];
   currentUser: User | null;       // selected family member
+  parentReturnId: string | null;  // non-null when a parent is previewing a kid's panel
   nextAllowanceDate: string | null;
   allowanceSettings: AllowanceSettings | null;
   lastRoutineGenerateDate: string | null;
   interestSettings: FamilyDoc['interestSettings'] | null;
   themeSettings: FamilyDoc['themeSettings'] | null;
   gamificationSettings?: FamilyDoc['gamificationSettings'];
+
+  // Adventure price system
+  adventurePrices: Record<string, AssetPrice>;
+  priceErrors: PriceFetchError[];
+  gemRates: GemRates;
+  isFetchingPrices: boolean;
+  priceFetchedAt: string | null;
+  fetchAssetPrices: (assets: ManagedAsset[]) => Promise<void>;
+  forceRefreshPrices: () => Promise<void>;
+  updateGemRates: (rates: GemRates) => Promise<void>;
+  saveApiKeys: (keys: Partial<ApiKeys>) => Promise<void>;
+  loadApiKeys: () => Promise<ApiKeys | null>;
   treasureClaims?: TreasureClaim[];
   timezoneOffset: number;
   currencySymbol: string; // default 'NT$'
+  kidTheme: string;       // 'pilot' | 'dark' | future themes
 
   // Internal
   _unsubscribers: Unsubscribe[];
@@ -97,6 +114,8 @@ interface AppState {
 
   // ── Member Selection ──────────────────────────────────
   login: (userId: string) => void;   // select which family member to act as
+  enterKidPreview: (kidId: string) => void;  // parent temporarily views a kid's panel
+  exitKidPreview: () => void;                // restore parent's identity
 
   // ── Budget Actions (write to Firestore) ──────────────
   addExpenseCategory: (name: string, icon: string) => Promise<void>;
@@ -154,6 +173,9 @@ interface AppState {
   updateEnvelope: (envelopeId: string, name: string, icon?: string) => Promise<void>;
   deleteEnvelope: (envelopeId: string) => Promise<void>;
   toggleHideEnvelope: (envelopeId: string) => Promise<void>;
+  setEnvelopeGoal: (envelopeId: string, goalAmount: number, goalDeadline?: string, goalNote?: string) => Promise<void>;
+  clearEnvelopeGoal: (envelopeId: string) => Promise<void>;
+  updateKidLicense: (kidId: string, max: number) => Promise<void>;
 
   // Interest & Theme
   updateInterestSettings: (rate: number, period: 'monthly' | 'yearly') => Promise<void>;
@@ -163,6 +185,9 @@ interface AppState {
 
   // Currency
   updateCurrencySymbol: (symbol: string) => Promise<void>;
+
+  // Theme
+  setKidTheme: (theme: string) => Promise<void>;
 
   // Security
   setUserPin: (userId: string, newPin: string) => Promise<void>;
@@ -236,14 +261,21 @@ export const useStore = create<AppState>()((set, get) => ({
   quests: [],
   routineQuests: [],
   currentUser: null,
+  parentReturnId: null,
   nextAllowanceDate: null,
   lastRoutineGenerateDate: null,
   interestSettings: null,
   themeSettings: null,
   gamificationSettings: undefined,
+  adventurePrices: {},
+  priceErrors: [],
+  gemRates: { stockTw: 10, stockUs: 3, crypto: 100 },
+  isFetchingPrices: false,
+  priceFetchedAt: null,
   treasureClaims: [],
   timezoneOffset: 480,
   currencySymbol: 'NT$',
+  kidTheme: 'pilot',
   allowanceSettings: null,
   _unsubscribers: [],
 
@@ -251,7 +283,7 @@ export const useStore = create<AppState>()((set, get) => ({
   setFirebaseUser: async (user) => {
     if (!user) {
       get().unsubscribeAll();
-      set({ firebaseUser: null, familyId: null, familyName: null, adminInviteCode: null, kidInviteCode: null, isLoading: false, isNewFamily: false, needsInviteCode: false, systemAdminRole: null, users: [], envelopes: [], transactions: [], quests: [], routineQuests: [], currentUser: null });
+      set({ firebaseUser: null, familyId: null, familyName: null, adminInviteCode: null, kidInviteCode: null, isLoading: false, isNewFamily: false, needsInviteCode: false, systemAdminRole: null, users: [], envelopes: [], transactions: [], quests: [], routineQuests: [], currentUser: null, parentReturnId: null });
       return;
     }
     set({ isLoading: true, firebaseUser: user });
@@ -466,9 +498,15 @@ export const useStore = create<AppState>()((set, get) => ({
         // Auto-match currentUser if Google UID is linked to a family member
         // Keep currentUser in sync with the latest users array (gems/exp/level may change)
         const prevCurrentUser = get().currentUser;
-        const freshCurrentUser = prevCurrentUser
+        const firebaseUid = get().firebaseUser?.uid;
+        let freshCurrentUser = prevCurrentUser
           ? users.find(u => u.id === prevCurrentUser.id) ?? prevCurrentUser
           : null;
+        // Feature: auto-login — if no currentUser yet, find the member whose googleUid
+        // matches the signed-in Google account (skip identity selection + PIN screen)
+        if (!freshCurrentUser && firebaseUid) {
+          freshCurrentUser = users.find(u => u.googleUid === firebaseUid) ?? null;
+        }
 
         set({
           familyId,
@@ -490,6 +528,7 @@ export const useStore = create<AppState>()((set, get) => ({
           themeSettings: data.themeSettings ?? null,
           timezoneOffset: data.timezoneOffset ?? 480,
           currencySymbol: data.currencySymbol ?? 'NT$',
+          kidTheme: data.kidTheme ?? 'pilot',
           isLoading: false,
           isNewFamily: false,
           currentUser: freshCurrentUser,
@@ -516,6 +555,23 @@ export const useStore = create<AppState>()((set, get) => ({
         .map(d => ({ id: d.id, ...d.data() } as Transaction))
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       set({ transactions });
+    }));
+
+    // Adventure prices realtime sync
+    const pricesRef = doc(db, 'adventureConfig', 'prices');
+    const gemRatesRef = doc(db, 'adventureConfig', 'gemRates');
+    unsubs.push(onSnapshot(pricesRef, (snap) => {
+      if (!snap.exists()) return;
+      const data = snap.data();
+      set({
+        adventurePrices: (data.prices ?? {}) as Record<string, AssetPrice>,
+        priceErrors: (data.fetchErrors ?? []) as PriceFetchError[],
+        priceFetchedAt: data.lastUpdated ?? null,
+      });
+    }));
+    unsubs.push(onSnapshot(gemRatesRef, (snap) => {
+      if (!snap.exists()) return;
+      set({ gemRates: snap.data() as GemRates });
     }));
 
     set({ _unsubscribers: unsubs });
@@ -597,7 +653,7 @@ export const useStore = create<AppState>()((set, get) => ({
     get().unsubscribeAll();
     const { auth } = await import('../services/firebase');
     await signOut(auth);
-    set({ firebaseUser: null, familyId: null, currentUser: null, isNewFamily: false, users: [], envelopes: [], transactions: [], quests: [], routineQuests: [] });
+    set({ firebaseUser: null, familyId: null, currentUser: null, parentReturnId: null, isNewFamily: false, users: [], envelopes: [], transactions: [], quests: [], routineQuests: [] });
   },
 
   // ── login (select family member, links googleUid on first selection) ──────
@@ -623,6 +679,22 @@ export const useStore = create<AppState>()((set, get) => ({
     }
   },
 
+
+  // ── Kid Preview (parent temporarily views a kid's panel) ────
+  enterKidPreview: (kidId) => {
+    const { currentUser, users } = get();
+    if (!currentUser) return;
+    const kid = users.find(u => u.id === kidId);
+    if (!kid) return;
+    set({ parentReturnId: currentUser.id, currentUser: kid });
+  },
+
+  exitKidPreview: () => {
+    const { parentReturnId, users } = get();
+    if (!parentReturnId) return;
+    const parent = users.find(u => u.id === parentReturnId);
+    if (parent) set({ currentUser: parent, parentReturnId: null });
+  },
 
   // ── Expense Categories ──────────────────────────────────────
   addExpenseCategory: async (name, icon) => {
@@ -819,14 +891,29 @@ export const useStore = create<AppState>()((set, get) => ({
     const { familyId, envelopes, users, currentUser } = get();
     if (!familyId || !currentUser) return;
 
-    // Kids spending (amount < 0) requires approval
-    const status = (currentUser.role === 'kid' && amount < 0) ? 'pending' : 'approved';
+    // Kids spending (amount < 0) normally needs approval.
+    // Spending-license: if the kid has a license with max > 0 and the spend fits
+    // within current energy, auto-approve and deduct energy.
+    const isKidSpend = currentUser.role === 'kid' && amount < 0;
+    const spendAbs = Math.abs(amount);
+    const now = new Date();
+
+    let status: 'pending' | 'approved' = isKidSpend ? 'pending' : 'approved';
+    let licenseUpdateForKid: SpendingLicense | undefined;
+
+    if (isKidSpend && currentUser.spendingLicense && currentUser.spendingLicense.max > 0) {
+      const result = spendEnergy(currentUser.spendingLicense, spendAbs, now);
+      if (result.ok) {
+        status = 'approved';
+        licenseUpdateForKid = result.nextLicense;
+      }
+    }
 
     // Add transaction doc
     await addDoc(collection(db, 'transactions'), {
       familyId, envelopeId, amount, note,
       ...(categoryId ? { categoryId } : {}),
-      timestamp: new Date().toISOString(),
+      timestamp: now.toISOString(),
       status,
     });
 
@@ -835,8 +922,8 @@ export const useStore = create<AppState>()((set, get) => ({
       e.id === envelopeId ? { ...e, balance: e.balance + amount } : e
     );
 
-    // Update consecutive days logic
-    const todayStr = new Date().toISOString().split('T')[0];
+    // Update consecutive days logic + license snapshot for current kid
+    const todayStr = now.toISOString().split('T')[0];
     const updatedUsers = users.map(u => {
       if (u.id !== currentUser.id) return u;
       const stats = u.stats || { questsCount: 0, totalGemsEarned: 0, consecutiveRecordDays: 0, lastRecordDate: null, consecutiveAllQuestsDays: 0, lastAllQuestsDay: null, consecutiveAllQuestsWeeks: 0, lastAllQuestsWeek: null };
@@ -853,7 +940,9 @@ export const useStore = create<AppState>()((set, get) => ({
         }
       }
 
-      return { ...u, stats: { ...stats, consecutiveRecordDays: newConsecutive, lastRecordDate: todayStr } };
+      const next: User = { ...u, stats: { ...stats, consecutiveRecordDays: newConsecutive, lastRecordDate: todayStr } };
+      if (licenseUpdateForKid) next.spendingLicense = licenseUpdateForKid;
+      return next;
     });
 
     await updateFamilyField(familyId, { envelopes: updatedEnvelopes, users: updatedUsers });
@@ -1094,7 +1183,7 @@ export const useStore = create<AppState>()((set, get) => ({
               e.id === env.id ? { ...e, balance: e.balance + investingAmount } : e
             );
             const txRef = doc(collection(db, 'transactions'));
-            batch.set(txRef, { familyId, envelopeId: env.id, amount: investingAmount, timestamp, note: '定期零用錢 (儲蓄投資)', status: 'approved' });
+            batch.set(txRef, { familyId, envelopeId: env.id, amount: investingAmount, timestamp, note: '定期零用錢 (儲蓄)', status: 'approved' });
           }
         }
 
@@ -1152,7 +1241,7 @@ export const useStore = create<AppState>()((set, get) => ({
             e.id === env.id ? { ...e, balance: e.balance + investingAmount } : e
           );
           const txRef = doc(collection(db, 'transactions'));
-          batch.set(txRef, { familyId, envelopeId: env.id, amount: investingAmount, timestamp, note: '單次手動派發 (儲蓄投資)', status: 'approved' });
+          batch.set(txRef, { familyId, envelopeId: env.id, amount: investingAmount, timestamp, note: '單次手動派發 (儲蓄)', status: 'approved' });
         }
       }
     });
@@ -1213,6 +1302,57 @@ export const useStore = create<AppState>()((set, get) => ({
   toggleHideEnvelope: async (envelopeId: string) => {
     const { familyId, envelopes } = get();
     await updateFamilyField(familyId, { envelopes: envelopes.map(e => e.id === envelopeId ? { ...e, isHidden: !e.isHidden } : e) });
+  },
+  setEnvelopeGoal: async (envelopeId, goalAmount, goalDeadline, goalNote) => {
+    const { familyId, envelopes } = get();
+    if (!familyId) return;
+    if (!Number.isFinite(goalAmount) || goalAmount <= 0) return;
+    const nowIso = new Date().toISOString();
+    const updated = envelopes.map(e => {
+      if (e.id !== envelopeId) return e;
+      const next: Envelope = {
+        ...e,
+        goalAmount,
+        goalCreatedAt: e.goalCreatedAt ?? nowIso,
+      };
+      if (goalDeadline) next.goalDeadline = goalDeadline; else delete next.goalDeadline;
+      if (goalNote) next.goalNote = goalNote; else delete next.goalNote;
+      return next;
+    });
+    await updateFamilyField(familyId, { envelopes: updated });
+  },
+  updateKidLicense: async (kidId, max) => {
+    const { familyId, users } = get();
+    if (!familyId) return;
+    const kid = users.find(u => u.id === kidId);
+    if (!kid) return;
+    const now = new Date();
+    const updatedUsers = users.map(u => {
+      if (u.id !== kidId) return u;
+      if (max <= 0) {
+        // Disable: strip the field
+        const next = { ...u };
+        delete next.spendingLicense;
+        return next;
+      }
+      return { ...u, spendingLicense: buildLicenseSnapshot(max, u.spendingLicense, now) };
+    });
+    await updateFamilyField(familyId, { users: updatedUsers });
+  },
+  clearEnvelopeGoal: async (envelopeId) => {
+    const { familyId, envelopes } = get();
+    if (!familyId) return;
+    const updated = envelopes.map(e => {
+      if (e.id !== envelopeId) return e;
+      // Strip all goal fields (destructure and discard)
+      const rest = { ...e };
+      delete rest.goalAmount;
+      delete rest.goalDeadline;
+      delete rest.goalCreatedAt;
+      delete rest.goalNote;
+      return rest;
+    });
+    await updateFamilyField(familyId, { envelopes: updated });
   },
 
   // ── RoutineQuest CRUD ─────────────────────────────────────────
@@ -1409,6 +1549,14 @@ export const useStore = create<AppState>()((set, get) => ({
     set({ currencySymbol: symbol });
   },
 
+  // ── setKidTheme ──────────────────────────────────────────────
+  setKidTheme: async (theme) => {
+    const { familyId } = get();
+    if (!familyId) return;
+    await updateFamilyField(familyId, { kidTheme: theme });
+    set({ kidTheme: theme });
+  },
+
   // ── transferMoney ────────────────────────────────────────────
   transferMoney: async (fromEnvId, toEnvId, amount, note = '信封轉帳') => {
     const { familyId, envelopes, currentUser } = get();
@@ -1452,9 +1600,7 @@ export const useStore = create<AppState>()((set, get) => ({
   // ── Backup & Restore ───────────────────────────────────────
   exportFamilyData: () => {
     const s = get();
-    const backup = {
-      version: '1.0',
-      timestamp: new Date().toISOString(),
+    const payload = buildBackupPayload({
       familyId: s.familyId,
       familyName: s.familyName,
       users: s.users,
@@ -1472,10 +1618,10 @@ export const useStore = create<AppState>()((set, get) => ({
       gamificationSettings: s.gamificationSettings,
       quests: s.quests,
       transactions: s.transactions,
-    };
+    });
     return {
-      data: JSON.stringify(backup, null, 2),
-      filename: `family_budget_backup_${s.familyName}_${new Date().toISOString().split('T')[0]}.json`
+      data: JSON.stringify(payload, null, 2),
+      filename: buildBackupFilename(s.familyName),
     };
   },
 
@@ -1483,28 +1629,54 @@ export const useStore = create<AppState>()((set, get) => ({
     const { familyId } = get();
     if (!familyId) throw new Error('未載入家庭資料，無法匯入');
 
-    const backup = JSON.parse(jsonData);
-    if (!backup.users || !backup.envelopes) throw new Error('無效的備份檔案格式');
+    // Parse + validate (throws BackupParseError with a code for UI to show).
+    let backup;
+    try {
+      backup = parseBackupPayload(jsonData);
+    } catch (e) {
+      if (e instanceof BackupParseError) throw new Error(e.message);
+      throw e;
+    }
+
+    // Safety: auto-download a pre-restore snapshot of the CURRENT state before
+    // writing. If the user realises the import was a mistake, this file is
+    // their lifeline. We only skip the download when running outside a browser
+    // (tests / SSR), where `document` is undefined.
+    if (typeof document !== 'undefined') {
+      try {
+        const { data, filename } = get().exportFamilyData();
+        const safeFilename = filename.replace(/\.json$/, '_pre-restore.json');
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = safeFilename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (err) {
+        // Don't block the restore if the browser blocks the download; surface it.
+        console.warn('[importFamilyData] pre-restore safety backup failed:', err);
+      }
+    }
 
     const batch = writeBatch(db);
     const fRef = familyRef(familyId);
 
-    // 1. Update main family document
     const familyUpdate: Partial<FamilyDoc> = {
-      name: backup.familyName || get().familyName,
+      name: backup.familyName || get().familyName || '',
       users: backup.users,
       envelopes: backup.envelopes,
-      expenseCategories: backup.expenseCategories || [],
-      badges: backup.badges || [],
-      treasureBoxes: backup.treasureBoxes || [],
-      routineQuests: backup.routineQuests || [],
-      nextAllowanceDate: backup.nextAllowanceDate || null,
-      lastRoutineGenerateDate: backup.lastRoutineGenerateDate || null,
-      interestSettings: backup.interestSettings || null,
-      themeSettings: backup.themeSettings || null,
-      timezoneOffset: backup.timezoneOffset || 480,
-      currencySymbol: backup.currencySymbol || 'NT$',
-      gamificationSettings: backup.gamificationSettings || undefined,
+      expenseCategories: backup.expenseCategories,
+      badges: backup.badges,
+      treasureBoxes: backup.treasureBoxes,
+      routineQuests: backup.routineQuests,
+      nextAllowanceDate: backup.nextAllowanceDate,
+      lastRoutineGenerateDate: backup.lastRoutineGenerateDate,
+      interestSettings: backup.interestSettings ?? undefined,
+      themeSettings: backup.themeSettings ?? undefined,
+      timezoneOffset: backup.timezoneOffset,
+      currencySymbol: backup.currencySymbol,
+      gamificationSettings: backup.gamificationSettings,
     };
     batch.update(fRef, familyUpdate);
 
@@ -1619,6 +1791,104 @@ export const useStore = create<AppState>()((set, get) => ({
     const { systemAdminRole } = get();
     if (systemAdminRole !== 'super') return;
     await updateDoc(doc(db, 'systemAdmins', uid), { inviteQuota: quota ?? null });
+  },
+
+  // ── fetchAssetPrices ──────────────────────────────────────────
+  fetchAssetPrices: async (assets) => {
+    const { isFetchingPrices, priceFetchedAt, gemRates } = get();
+    if (isFetchingPrices) return;
+
+    // Check if prices are fresh (< 24h)
+    const { isPriceStale } = await import('../services/priceService');
+    if (!isPriceStale(priceFetchedAt)) return;
+
+    set({ isFetchingPrices: true });
+    try {
+      const { fetchAllPrices } = await import('../services/priceService');
+
+      // Load API keys
+      let fmpApiKey = '';
+      try {
+        const keySnap = await getDoc(doc(db, 'adventureConfig', 'apiKeys'));
+        if (keySnap.exists()) fmpApiKey = (keySnap.data() as { fmpApiKey?: string }).fmpApiKey ?? '';
+      } catch { /* no keys configured */ }
+
+      // Group assets by type
+      const groups: Array<{ type: AssetType; symbols: string[] }> = [];
+      for (const type of ['stock', 'stock_tw', 'stock_otc', 'forex', 'crypto'] as const) {
+        const syms = assets.filter(a => a.type === type).map(a => a.symbol);
+        if (syms.length > 0) groups.push({ type, symbols: syms });
+      }
+
+      const { prices: rawPrices, errors } = await fetchAllPrices(groups, fmpApiKey);
+      const now = new Date().toISOString();
+
+      // Convert raw prices to gem prices using gemRates
+      const adventurePrices: Record<string, AssetPrice> = {};
+      for (const asset of assets) {
+        const raw = rawPrices[asset.symbol];
+        if (!raw) continue;
+        let rate = 1;
+        if (asset.type === 'stock_tw' || asset.type === 'stock_otc') rate = gemRates.stockTw;
+        else if (asset.type === 'stock') rate = gemRates.stockUs;
+        else if (asset.type === 'crypto') rate = gemRates.crypto;
+        else rate = gemRates.stockTw; // forex uses TWD base
+        adventurePrices[asset.symbol] = {
+          price: raw.price,
+          change: raw.change,
+          priceGems: Math.round(raw.price / Math.max(rate, 0.001)),
+          source: errors.some(e => e.assetType === asset.type) ? 'fallback' : 'primary',
+          lastUpdated: now,
+        };
+      }
+
+      // Save to Firestore
+      await setDoc(doc(db, 'adventureConfig', 'prices'), {
+        prices: adventurePrices,
+        fetchErrors: errors,
+        lastUpdated: now,
+      });
+
+      set({ adventurePrices, priceErrors: errors, priceFetchedAt: now });
+    } catch (e) {
+      console.error('[fetchAssetPrices]', e);
+    } finally {
+      set({ isFetchingPrices: false });
+    }
+  },
+
+  // ── forceRefreshPrices ────────────────────────────────────────
+  // Clears the 24h cache so the next fetchAssetPrices call will re-fetch.
+  forceRefreshPrices: async () => {
+    // Reset Firestore cache timestamp → onSnapshot will propagate priceFetchedAt: null
+    await setDoc(doc(db, 'adventureConfig', 'prices'), { lastUpdated: null }, { merge: true });
+    set({ priceFetchedAt: null });
+  },
+
+  // ── updateGemRates ────────────────────────────────────────────
+  updateGemRates: async (rates) => {
+    await setDoc(doc(db, 'adventureConfig', 'gemRates'), rates);
+    set({ gemRates: rates });
+  },
+
+  // ── saveApiKeys ───────────────────────────────────────────────
+  saveApiKeys: async (keys) => {
+    const { systemAdminRole, firebaseUser } = get();
+    if (systemAdminRole !== 'super') return;
+    await setDoc(doc(db, 'adventureConfig', 'apiKeys'), {
+      ...keys,
+      updatedAt: new Date().toISOString(),
+      updatedBy: firebaseUser?.uid ?? '',
+    });
+  },
+
+  // ── loadApiKeys ───────────────────────────────────────────────
+  loadApiKeys: async () => {
+    const { systemAdminRole } = get();
+    if (systemAdminRole !== 'super') return null;
+    const snap = await getDoc(doc(db, 'adventureConfig', 'apiKeys'));
+    if (!snap.exists()) return null;
+    return snap.data() as ApiKeys;
   },
 
   // ── getAdventureConfigDoc ─────────────────────────────────────

@@ -17,7 +17,7 @@ const AppInner: React.FC = () => {
   const location = useLocation();
   const {
     currentUser, logout, firebaseUser, familyId, isLoading, isNewFamily,
-    needsInviteCode, systemAdminRole,
+    needsInviteCode, systemAdminRole, parentReturnId,
     nextAllowanceDate, distributeAllowance, generateRoutineQuests,
     setFirebaseUser, themeSettings,
   } = useStore();
@@ -140,7 +140,7 @@ const AppInner: React.FC = () => {
               }
             />
             <Route path="/parent/*" element={isAdmin ? <ParentDashboard /> : <Navigate to="/" />} />
-            <Route path="/kid/*" element={currentUser?.role === 'kid' ? <KidDashboard /> : <Navigate to="/" />} />
+            <Route path="/kid/*" element={currentUser?.role === 'kid' || !!parentReturnId ? <KidDashboard /> : <Navigate to="/" />} />
             <Route path="/admin/*" element={systemAdminRole ? <SuperAdminPanel /> : <Navigate to="/" />} />
           </Routes>
         </main>

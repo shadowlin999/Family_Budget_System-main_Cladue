@@ -7,7 +7,54 @@ import { useStore } from '../store/index';
 import type { FamilySummary, InviteCode, SystemAdmin, SystemAdminRole } from '../store/index';
 import AdventureAdminSection from './adventure/AdventureAdminSection';
 
-type AdminTab = 'families' | 'invites' | 'admins' | 'adventure';
+type AdminTab = 'families' | 'invites' | 'admins' | 'adventure' | 'apikeys';
+
+// ── ApiKeysSection ─────────────────────────────────────────────────────────────
+const ApiKeysSection: React.FC = () => {
+  const { saveApiKeys, loadApiKeys } = useStore();
+  const [fmpKey, setFmpKey] = useState('');
+  const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadApiKeys().then(keys => {
+      if (keys?.fmpApiKey) setFmpKey(keys.fmpApiKey);
+      setLoading(false);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleSave = async () => {
+    await saveApiKeys({ fmpApiKey: fmpKey });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  if (loading) return <div className="text-muted text-sm p-4">載入中...</div>;
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="text-xs text-amber-400 bg-amber-400/10 border border-amber-400/20 rounded-xl px-4 py-3">
+        ⚠️ API Key 僅由超級管理員管理，存入資料庫時請確認安全性。
+      </div>
+      <div className="flex flex-col gap-2">
+        <label className="text-xs text-muted font-bold uppercase">Financial Modeling Prep（美股備援）</label>
+        <div className="text-[10px] text-slate-500 mb-1">免費申請：financialmodelingprep.com · 250次/日</div>
+        <input
+          type="password"
+          className="input-field font-mono"
+          placeholder="輸入 FMP API Key..."
+          value={fmpKey}
+          onChange={e => setFmpKey(e.target.value)}
+        />
+      </div>
+      <button onClick={handleSave}
+        className="btn btn-primary w-full">
+        {saved ? '✅ 已儲存' : '💾 儲存 API Keys'}
+      </button>
+    </div>
+  );
+};
 
 const ROLE_LABEL: Record<SystemAdminRole, string> = {
   super: '⭐ 超級管理者',
@@ -107,14 +154,15 @@ const SuperAdminPanel: React.FC = () => {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 flex-wrap">
-        {([['families', Home, '家庭總覽'], ['invites', Key, '邀請碼'], ['admins', Crown, '管理者'], ['adventure', Swords, '冒險設定']] as const).map(([id, Icon, label]) => {
+        {([['families', Home, '家庭總覽'], ['invites', Key, '邀請碼'], ['admins', Crown, '管理者'], ['adventure', Swords, '冒險設定'], ['apikeys', Key, '🔑 API Keys']] as const).map(([id, Icon, label]) => {
           if (id === 'admins' && systemAdminRole !== 'super') return null;
           if (id === 'adventure' && systemAdminRole !== 'super') return null;
+          if (id === 'apikeys' && systemAdminRole !== 'super') return null;
           return (
             <button
               key={id}
               className={`btn flex items-center gap-1.5 ${tab === id ? 'btn-primary' : 'btn-ghost'}`}
-              onClick={() => setTab(id)}
+              onClick={() => setTab(id as AdminTab)}
             >
               <Icon size={15} /> {label}
             </button>
@@ -227,6 +275,19 @@ const SuperAdminPanel: React.FC = () => {
             </div>
           </div>
           <AdventureAdminSection isSuperAdmin={systemAdminRole === 'super'} />
+        </div>
+      )}
+
+      {tab === 'apikeys' && systemAdminRole === 'super' && (
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center gap-3 pb-1 border-b border-white/10">
+            <Key size={18} className="text-primary" />
+            <div>
+              <h2 className="font-black text-base">API Keys 管理</h2>
+              <p className="text-xs text-muted">設定第三方 API 金鑰，用於即時市場價格備援資料來源</p>
+            </div>
+          </div>
+          <ApiKeysSection />
         </div>
       )}
 

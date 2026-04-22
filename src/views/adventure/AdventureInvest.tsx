@@ -1,55 +1,31 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { TrendingUp, TrendingDown, Gem, AlertCircle, RefreshCw } from 'lucide-react';
-import type { AssetType } from '../../types/adventure';
+import { useStore } from '../../store/index';
+import type { AssetType, ManagedAsset } from '../../types/adventure';
 
-// ── Static asset catalogue ────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 interface DisplayAsset {
   id: string;
   name: string;
   type: AssetType;
   symbol: string;
   emoji: string;
-  baseFeeRate: number; // %
+  baseFeeRate: number;
   discountTiers: { minSavings: number; discountPct: number }[];
 }
 
-const ASSETS: DisplayAsset[] = [
-  // Stocks
-  { id: 'AAPL',   name: '蘋果公司',     type: 'stock',  symbol: 'AAPL',    emoji: '🍎', baseFeeRate: 1.5, discountTiers: [{ minSavings: 500, discountPct: 20 }, { minSavings: 2000, discountPct: 40 }] },
-  { id: 'TSLA',   name: '特斯拉',       type: 'stock',  symbol: 'TSLA',    emoji: '🚗', baseFeeRate: 1.5, discountTiers: [{ minSavings: 500, discountPct: 20 }, { minSavings: 2000, discountPct: 40 }] },
-  { id: 'NVDA',   name: 'NVIDIA',       type: 'stock',  symbol: 'NVDA',    emoji: '💻', baseFeeRate: 1.5, discountTiers: [{ minSavings: 500, discountPct: 20 }, { minSavings: 2000, discountPct: 40 }] },
-  // Forex
-  { id: 'USDJPY', name: '美元/日圓',    type: 'forex',  symbol: 'USD/JPY', emoji: '💴', baseFeeRate: 1.0, discountTiers: [{ minSavings: 300, discountPct: 15 }, { minSavings: 1500, discountPct: 35 }] },
-  { id: 'EURUSD', name: '歐元/美元',    type: 'forex',  symbol: 'EUR/USD', emoji: '💶', baseFeeRate: 1.0, discountTiers: [{ minSavings: 300, discountPct: 15 }, { minSavings: 1500, discountPct: 35 }] },
-  // Crypto
-  { id: 'BTC',    name: '比特幣',       type: 'crypto', symbol: 'BTC',     emoji: '₿',  baseFeeRate: 2.0, discountTiers: [{ minSavings: 1000, discountPct: 20 }, { minSavings: 5000, discountPct: 50 }] },
-  { id: 'ETH',    name: '以太幣',       type: 'crypto', symbol: 'ETH',     emoji: '⟠',  baseFeeRate: 2.0, discountTiers: [{ minSavings: 1000, discountPct: 20 }, { minSavings: 5000, discountPct: 50 }] },
-];
-
-// Demo price data (in real app: fetched from public market data API)
-const DEMO_PRICES: Record<string, { price: number; change: number }> = {
-  AAPL:   { price: 18520, change: +2.34 },
-  TSLA:   { price: 7650,  change: -1.82 },
-  NVDA:   { price: 89300, change: +4.67 },
-  USDJPY: { price: 15183, change: +0.23 },
-  EURUSD: { price: 10881, change: -0.14 },
-  BTC:    { price: 2850000, change: +3.12 },
-  ETH:    { price: 178000, change: +1.45 },
+const TYPE_LABELS: Record<string, string> = {
+  stock:     '📈 美股',
+  stock_tw:  '🇹🇼 台股（上市）',
+  stock_otc: '🇹🇼 台股（上櫃）',
+  forex:     '💱 外匯',
+  crypto:    '🪙 加密貨幣',
 };
 
-// Demo holdings
-const DEMO_HOLDINGS = [
-  { assetId: 'AAPL', quantity: 2, avgCostGems: 180 },
-  { assetId: 'USDJPY', quantity: 5, avgCostGems: 95 },
-];
-
-const TYPE_LABELS: Record<AssetType, string> = {
-  stock:  '📈 股票',
-  forex:  '💱 外匯',
-  crypto: '🪙 加密貨幣',
+const SOURCE_BADGE: Record<string, { label: string; color: string }> = {
+  primary:  { label: '主要來源', color: 'text-green-400 bg-green-400/10' },
+  fallback: { label: '備援來源', color: 'text-amber-400 bg-amber-400/10' },
 };
-
-const DEMO_SAVINGS = 800;
 
 function calcFee(asset: DisplayAsset, savings: number): number {
   let discount = 0;
@@ -59,29 +35,71 @@ function calcFee(asset: DisplayAsset, savings: number): number {
   return parseFloat((asset.baseFeeRate * (1 - discount / 100)).toFixed(2));
 }
 
-function formatPrice(price: number): string {
-  if (price >= 10000) return `${(price / 10000).toFixed(2)}萬`;
-  return price.toLocaleString();
+function formatGems(gems: number): string {
+  if (gems >= 10000) return `${(gems / 10000).toFixed(1)}萬`;
+  return gems.toLocaleString();
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 const AdventureInvest: React.FC = () => {
+  const {
+    adventurePrices, priceErrors, isFetchingPrices, priceFetchedAt,
+    fetchAssetPrices, forceRefreshPrices, getAdventureConfigDoc,
+    envelopes, currentUser, gemRates, systemAdminRole,
+  } = useStore();
+
   const [activeType, setActiveType] = useState<AssetType | 'all'>('all');
   const [selectedAsset, setSelectedAsset] = useState<string | null>(null);
   const [tradeAction, setTradeAction] = useState<'buy' | 'sell'>('buy');
   const [tradeQty, setTradeQty] = useState('1');
-  const savings = DEMO_SAVINGS;
+  const [assets, setAssets] = useState<DisplayAsset[]>([]);
+  const [loadingAssets, setLoadingAssets] = useState(true);
 
-  const filtered = activeType === 'all' ? ASSETS : ASSETS.filter(a => a.type === activeType);
-  const selected = ASSETS.find(a => a.id === selectedAsset);
-  const priceData = selectedAsset ? DEMO_PRICES[selectedAsset] : null;
+  // Savings balance (investing envelopes)
+  const savings = currentUser
+    ? envelopes.filter(e => e.ownerId === currentUser.id && e.type === 'investing')
+        .reduce((s, e) => s + e.balance, 0)
+    : 0;
 
-  // Portfolio value
-  const portfolioValue = DEMO_HOLDINGS.reduce((sum, h) => {
-    const p = DEMO_PRICES[h.assetId]?.price ?? 0;
-    return sum + h.quantity * p;
-  }, 0);
-  const portfolioCost = DEMO_HOLDINGS.reduce((sum, h) => sum + h.quantity * h.avgCostGems, 0);
+  // Load asset catalogue from Firestore
+  useEffect(() => {
+    setLoadingAssets(true);
+    getAdventureConfigDoc('assets').then(docData => {
+      if (docData?.items) {
+        const managedAssets = docData.items as ManagedAsset[];
+        setAssets(managedAssets as unknown as DisplayAsset[]);
+
+        // Auto-invalidate stale cache if errors reference APIs we no longer use as primary.
+        // This lets existing deployments pick up the new code without manual "force refresh".
+        const STALE_PRIMARIES = new Set([
+          'Yahoo Finance',     // used to be US stock primary
+          'CoinGecko',         // used to be crypto primary
+          'open.er-api',       // used to be forex primary
+          'TWSE_Deprecated',   // placeholder for future deprecations
+        ]);
+        const hasStale = priceErrors.some(e => STALE_PRIMARIES.has(e.failedSource));
+        if (hasStale && ((currentUser?.role === 'primary_admin' || currentUser?.role === 'co_admin') || systemAdminRole)) {
+          forceRefreshPrices();
+        } else {
+          fetchAssetPrices(managedAssets);
+        }
+      }
+      setLoadingAssets(false);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-fetch when cache is cleared (forceRefreshPrices sets priceFetchedAt to null)
+  useEffect(() => {
+    if (priceFetchedAt !== null || assets.length === 0) return;
+    fetchAssetPrices(assets as unknown as ManagedAsset[]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [priceFetchedAt]);
+
+  const allTypes = [...new Set(assets.map(a => a.type))] as AssetType[];
+  const filtered = activeType === 'all' ? assets : assets.filter(a => a.type === activeType);
+
+  const priceFetchedDate = priceFetchedAt ? new Date(priceFetchedAt).toLocaleString('zh-TW') : null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -102,151 +120,169 @@ const AdventureInvest: React.FC = () => {
         </p>
       </div>
 
-      {/* Portfolio summary */}
-      <div className="glass-card bg-gradient-to-br from-blue-500/10 to-violet-500/10 border border-blue-400/20">
-        <div className="text-xs font-bold text-muted mb-3">我的投資組合</div>
-        <div className="flex gap-4 flex-wrap">
-          <div>
-            <div className="text-[10px] text-muted">持倉市值</div>
-            <div className="text-lg font-black flex items-center gap-1">
-              <Gem size={14} className="text-amber-400" />
-              {formatPrice(portfolioValue)}
-            </div>
-          </div>
-          <div>
-            <div className="text-[10px] text-muted">投入成本</div>
-            <div className="text-base font-black text-muted">{portfolioCost}</div>
-          </div>
-          <div>
-            <div className="text-[10px] text-muted">盈虧</div>
-            <div className={`text-base font-black ${portfolioValue > portfolioCost ? 'text-green-400' : 'text-red-400'}`}>
-              {portfolioValue > portfolioCost ? '+' : ''}{portfolioValue - portfolioCost}
-            </div>
-          </div>
+      {/* Price source info */}
+      <div className="flex items-center justify-between text-[10px] text-muted bg-white/5 rounded-xl px-3 py-2">
+        <span>{priceFetchedDate ? `📅 價格更新：${priceFetchedDate}` : '📅 尚未取得報價'}</span>
+        <div className="flex items-center gap-2">
+          {priceErrors.filter(e => e.errorMessage !== 'FMP_KEY_MISSING').length > 0 && (
+            <span className="text-amber-400 font-bold">⚠️ {priceErrors.filter(e => e.errorMessage !== 'FMP_KEY_MISSING').length} 項使用備援</span>
+          )}
+          {priceErrors.some(e => e.errorMessage === 'FMP_KEY_MISSING') && (
+            <span className="text-red-400 font-bold">🔑 美股需設定 Key</span>
+          )}
+          {isFetchingPrices
+            ? <span className="flex items-center gap-1"><RefreshCw size={10} className="animate-spin" /> 更新中...</span>
+            : ((currentUser?.role === 'primary_admin' || currentUser?.role === 'co_admin') || systemAdminRole) && (
+              <button
+                onClick={async () => { await forceRefreshPrices(); }}
+                className="flex items-center gap-1 text-blue-400 hover:text-blue-300 font-bold"
+                title="清除快取，強制重新取得報價"
+              >
+                <RefreshCw size={10} /> 強制刷新
+              </button>
+            )
+          }
         </div>
-        {DEMO_HOLDINGS.length > 0 && (
-          <div className="mt-3 flex flex-col gap-1.5">
-            {DEMO_HOLDINGS.map(h => {
-              const asset = ASSETS.find(a => a.id === h.assetId);
-              const p = DEMO_PRICES[h.assetId];
-              const currentVal = h.quantity * (p?.price ?? 0);
-              const costVal = h.quantity * h.avgCostGems;
-              const gain = currentVal - costVal;
-              return (
-                <div key={h.assetId} className="flex items-center gap-2 text-xs bg-white/5 rounded-xl px-3 py-2 border border-white/10">
-                  <span className="text-base">{asset?.emoji}</span>
-                  <span className="font-bold flex-1">{asset?.symbol} × {h.quantity}</span>
-                  <span className={`font-bold ${gain >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {gain >= 0 ? '+' : ''}{gain}
-                  </span>
-                  {p && (
-                    <span className={`text-[10px] flex items-center gap-0.5 ${p.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {p.change >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
-                      {p.change > 0 ? '+' : ''}{p.change}%
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
       </div>
 
-      {/* Fee discount */}
-      <div className="glass-card bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-400/20">
-        <div className="flex items-center gap-2 mb-1">
-          <TrendingUp size={12} className="text-green-400" />
-          <span className="text-xs font-black text-green-400">儲蓄折扣 → 手續費減免</span>
+      {/* Fallback warnings & missing API key notice */}
+      {priceErrors.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {priceErrors.map((err, i) => {
+            const isMissingKey = err.errorMessage === 'FMP_KEY_MISSING';
+            return (
+              <div key={i} className={`flex items-center gap-2 rounded-xl px-3 py-2 text-[10px] ${isMissingKey ? 'bg-red-500/10 border border-red-400/20 text-red-300' : 'bg-amber-500/10 border border-amber-400/20 text-amber-300'}`}>
+                <span>{isMissingKey ? '🔑' : '⚠️'}</span>
+                {isMissingKey ? (
+                  <span><strong>{TYPE_LABELS[err.assetType] ?? err.assetType}</strong>：尚未設定 FMP API Key，請至超級管理員面板新增（免費申請：financialmodelingprep.com）</span>
+                ) : (
+                  <span><strong>{TYPE_LABELS[err.assetType] ?? err.assetType}</strong>：{err.failedSource} 失效，改用 {err.fallbackSource}</span>
+                )}
+              </div>
+            );
+          })}
         </div>
-        <div className="text-[10px] text-muted">儲蓄信封餘額越高，交易手續費越低！</div>
-      </div>
+      )}
 
-      {/* Type filter */}
-      <div className="flex gap-2 flex-wrap">
-        {(['all', 'stock', 'forex', 'crypto'] as const).map(t => (
-          <button key={t} onClick={() => setActiveType(t)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all
-              ${activeType === t ? 'border-blue-400/50 bg-blue-400/10 text-blue-300' : 'border-white/10 text-muted hover:border-white/30'}`}>
-            {t === 'all' ? '全部' : TYPE_LABELS[t]}
-          </button>
+      {/* GemRates info */}
+      <div className="grid grid-cols-3 gap-2 text-center">
+        {[
+          { label: '台股', rate: gemRates.stockTw, unit: 'TWD' },
+          { label: '美股', rate: gemRates.stockUs, unit: 'USD' },
+          { label: '加密幣', rate: gemRates.crypto, unit: 'TWD' },
+        ].map(r => (
+          <div key={r.label} className="bg-white/5 rounded-xl p-2">
+            <div className="text-[10px] text-muted">{r.label}</div>
+            <div className="text-xs font-black text-amber-400 flex items-center justify-center gap-0.5">
+              <Gem size={10} />1 = {r.rate} {r.unit}
+            </div>
+          </div>
         ))}
       </div>
 
+      {/* Asset type filter */}
+      {allTypes.length > 1 && (
+        <div className="flex gap-1 flex-wrap">
+          <button onClick={() => setActiveType('all')}
+            className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${activeType === 'all' ? 'bg-primary text-white' : 'bg-white/5 text-muted'}`}>
+            全部
+          </button>
+          {allTypes.map(t => (
+            <button key={t} onClick={() => setActiveType(t)}
+              className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${activeType === t ? 'bg-primary text-white' : 'bg-white/5 text-muted'}`}>
+              {TYPE_LABELS[t] ?? t}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Asset list */}
-      <div className="flex flex-col gap-2">
-        {filtered.map(asset => {
-          const p = DEMO_PRICES[asset.id];
-          const fee = calcFee(asset, savings);
-          const isSelected = selectedAsset === asset.id;
-          return (
-            <div key={asset.id}>
-              <button onClick={() => setSelectedAsset(isSelected ? null : asset.id)}
-                className={`w-full flex items-center gap-3 glass-card border transition-all text-left
-                  ${isSelected ? 'border-blue-400/40 bg-blue-400/5' : 'border-white/10 hover:border-white/30'}`}>
-                <span className="text-2xl shrink-0">{asset.emoji}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-sm">{asset.name}</div>
-                  <div className="text-[10px] text-muted">{asset.symbol} · 手續費 {fee}%{savings >= (asset.discountTiers[0]?.minSavings ?? Infinity) ? ' (已折扣)' : ''}</div>
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="font-black text-sm flex items-center gap-1">
-                    <Gem size={11} className="text-amber-400" />
-                    {formatPrice(p.price)}
-                  </div>
-                  <div className={`text-[10px] font-bold flex items-center gap-0.5 justify-end ${p.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {p.change >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
-                    {p.change > 0 ? '+' : ''}{p.change}%
-                  </div>
-                </div>
-              </button>
+      {loadingAssets ? (
+        <div className="text-center py-8 text-muted text-sm">載入資產中...</div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-8 text-muted text-sm">尚無資產，請家長在管理員面板新增</div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {filtered.map(asset => {
+            const p = adventurePrices[asset.symbol];
+            const isSelected = selectedAsset === asset.symbol;
+            const fee = calcFee(asset, savings);
+            const srcBadge = p ? (SOURCE_BADGE[p.source] ?? SOURCE_BADGE.primary) : null;
 
-              {/* Trade panel (expanded) */}
-              {isSelected && selected && (
-                <div className="mt-1 glass-card border border-blue-400/20 bg-blue-400/5 flex flex-col gap-3">
-                  <div className="flex gap-2">
-                    {(['buy', 'sell'] as const).map(action => (
-                      <button key={action} onClick={() => setTradeAction(action)}
-                        className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-all
-                          ${tradeAction === action
-                            ? action === 'buy' ? 'border-green-400/50 bg-green-400/10 text-green-300' : 'border-red-400/50 bg-red-400/10 text-red-300'
-                            : 'border-white/10 text-muted'}`}>
-                        {action === 'buy' ? '📈 買入' : '📉 賣出'}
-                      </button>
-                    ))}
-                  </div>
+            return (
+              <div key={asset.id}
+                onClick={() => setSelectedAsset(isSelected ? null : asset.id)}
+                className={`rounded-2xl border p-4 cursor-pointer transition-all ${isSelected ? 'border-primary bg-primary/10' : 'border-white/10 bg-white/5'}`}>
+                <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
-                    <label className="text-xs text-muted shrink-0">數量</label>
-                    <input type="number" min="1" value={tradeQty} onChange={e => setTradeQty(e.target.value)}
-                      className="input-field flex-1 text-sm py-1.5" />
-                  </div>
-                  <div className="text-xs text-muted flex flex-col gap-1">
-                    <div className="flex justify-between">
-                      <span>單價</span><span className="font-bold">{formatPrice(priceData?.price ?? 0)} 寶石</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>手續費 {fee}%</span>
-                      <span className="font-bold">{Math.ceil((priceData?.price ?? 0) * parseInt(tradeQty || '0') * fee / 100)} 寶石</span>
-                    </div>
-                    <div className="flex justify-between font-black text-white border-t border-white/10 pt-1">
-                      <span>總計</span>
-                      <span>{Math.ceil((priceData?.price ?? 0) * parseInt(tradeQty || '0') * (1 + fee / 100))} 寶石</span>
+                    <span className="text-2xl">{asset.emoji}</span>
+                    <div>
+                      <div className="font-black text-sm">{asset.name}</div>
+                      <div className="text-[10px] text-muted">{asset.symbol} · {TYPE_LABELS[asset.type] ?? asset.type}</div>
                     </div>
                   </div>
-                  <button className={`w-full py-2.5 rounded-xl font-black text-sm flex items-center justify-center gap-2 transition-all active:scale-95
-                    ${tradeAction === 'buy' ? 'bg-green-500/20 border border-green-400/30 text-green-300 hover:bg-green-500/30' : 'bg-red-500/20 border border-red-400/30 text-red-300 hover:bg-red-500/30'}`}>
-                    {tradeAction === 'buy' ? '確認買入' : '確認賣出'}
-                  </button>
+                  <div className="text-right">
+                    {p ? (
+                      <>
+                        <div className="font-black text-sm flex items-center gap-1 justify-end">
+                          <Gem size={12} className="text-amber-400" />
+                          {formatGems(p.priceGems)} 寶石
+                        </div>
+                        <div className={`text-xs font-bold flex items-center gap-0.5 justify-end ${p.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {p.change >= 0 ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+                          {p.change >= 0 ? '+' : ''}{p.change.toFixed(2)}%
+                        </div>
+                        {srcBadge && (
+                          <div className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold mt-0.5 ${srcBadge.color}`}>{srcBadge.label}</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-xs text-muted">
+                        {isFetchingPrices ? '載入中...' : asset.type === 'stock' ? '需設定 API Key' : '價格不可用'}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
 
-      <div className="flex items-center gap-2 justify-center text-xs text-muted">
-        <RefreshCw size={11} />
-        <span>價格每日更新，參考真實市場</span>
-      </div>
+                {/* Expanded trade panel */}
+                {isSelected && p && (
+                  <div className="mt-3 pt-3 border-t border-white/10 flex flex-col gap-3">
+                    <div className="text-xs text-muted">
+                      真實市價：NT${p.price.toLocaleString()} · 手續費：{fee}%
+                    </div>
+                    <div className="flex gap-2">
+                      {(['buy','sell'] as const).map(act => (
+                        <button key={act} onClick={e => { e.stopPropagation(); setTradeAction(act); }}
+                          className={`flex-1 py-2 rounded-xl text-xs font-bold transition-all ${tradeAction === act ? (act === 'buy' ? 'bg-green-500 text-white' : 'bg-red-500 text-white') : 'bg-white/5 text-muted'}`}>
+                          {act === 'buy' ? '買入' : '賣出'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input type="number" min="1" value={tradeQty} onChange={e => setTradeQty(e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        className="input-field w-20 text-center text-sm py-2" />
+                      <span className="text-xs text-muted">單位</span>
+                      <div className="ml-auto text-right">
+                        <div className="text-sm font-black">
+                          共 {formatGems(Math.round(p.priceGems * Number(tradeQty || 1)))} 寶石
+                        </div>
+                        <div className="text-[10px] text-muted">
+                          手續費 {formatGems(Math.round(p.priceGems * Number(tradeQty || 1) * fee / 100))} 寶石
+                        </div>
+                      </div>
+                    </div>
+                    <button onClick={e => { e.stopPropagation(); alert('投資交易功能開發中！'); }}
+                      className={`w-full py-2.5 rounded-xl font-black text-sm transition-all active:scale-95 ${tradeAction === 'buy' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
+                      {tradeAction === 'buy' ? '確認買入' : '確認賣出'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

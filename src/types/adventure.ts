@@ -93,7 +93,36 @@ export interface KidInventoryItem {
 }
 
 // ── Investment (投資部) ────────────────────────────────────────────────────────
-export type AssetType = 'stock' | 'forex' | 'crypto'; // future: crypto
+// Expanded asset types (backward compat: 'stock' = US stock)
+export type AssetType = 'stock' | 'stock_tw' | 'stock_otc' | 'forex' | 'crypto';
+
+export interface AssetPrice {
+  price: number;        // real-world price in TWD
+  change: number;       // 24h/1d change percent
+  priceGems: number;    // price * gemRate conversion
+  source: string;       // which API provided this
+  lastUpdated: string;  // ISO string
+}
+
+export interface PriceFetchError {
+  assetType: AssetType | string;
+  failedSource: string;
+  fallbackSource: string;
+  errorMessage: string;
+  timestamp: string;
+}
+
+export interface GemRates {
+  stockTw: number;   // 1 gem = X TWD (for TW stocks & forex)
+  stockUs: number;   // 1 gem = X USD (for US stocks)
+  crypto: number;    // 1 gem = X TWD (for crypto)
+}
+
+export interface ApiKeys {
+  fmpApiKey: string;   // Financial Modeling Prep (US stock fallback)
+  updatedAt?: string;
+  updatedBy?: string;
+}
 
 export interface VirtualAsset {
   id: string;            // e.g. 'AAPL', 'USD/JPY'
@@ -226,6 +255,7 @@ export interface ManagedAsset extends AdventureConfigItem {
   symbol: string;
   emoji: string;
   baseFeeRate: number; // %
+  marketSuffix?: string; // e.g. 'TW', 'TWO' for Taiwan stocks
   discountTiers: { minSavings: number; discountPct: number }[];
 }
 

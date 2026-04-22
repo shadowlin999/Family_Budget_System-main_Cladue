@@ -1,7 +1,10 @@
 import React, { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useStore, calculateExpToNextLevel, calculateLevelProgress } from '../store/index';
 import type { TreasureClaim, Quest } from '../store/index';
-import { Wallet, TrendingUp, Award, Gift, Sparkles, Info, ChevronRight, ChevronLeft, MessageSquare, Package, ArrowRightLeft, Lock, Swords, Plus, X } from 'lucide-react';
+import { Wallet, TrendingUp, Award, Gift, Sparkles, Info, ChevronRight, ChevronLeft, MessageSquare, Package, ArrowRightLeft, Lock, Swords, Plus, X, Target } from 'lucide-react';
+import { calcGoalProgress } from '../domain/goal';
+import { calcCurrentEnergy, daysToFull } from '../domain/energy';
 import { DigitalClock } from '../components/DigitalClock';
 import AdventureZone from './adventure/AdventureZone';
 
@@ -42,7 +45,7 @@ const Section: React.FC<{
         <span className="text-2xl leading-none">{emoji}</span>
         <span className="font-black text-lg flex-1">{title}</span>
         {rightElement}
-        <span className="text-xs text-muted font-normal bg-black/30 px-2.5 py-1 rounded-full border border-white/5 flex-shrink-0">
+        <span className="text-xs text-muted font-normal bg-black/10 px-2.5 py-1 rounded-full border border-black/5 flex-shrink-0">
           {isOpen ? '收起' : '展開'}
         </span>
       </button>
@@ -56,7 +59,7 @@ const BottomSheet: React.FC<{ title: string; onClose: () => void; children: Reac
   <div className="bottom-sheet-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
     <div className="bottom-sheet">
       <div className="bottom-sheet-handle" />
-      <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 sticky top-0 bg-[#0d1526] z-10">
+      <div className="bottom-sheet-sticky-header">
         <h3 className="font-black text-lg">{title}</h3>
         <button onClick={onClose} className="p-2 text-muted hover:text-white rounded-xl hover:bg-white/10 transition-colors">
           <X size={20} />
@@ -74,7 +77,11 @@ const KidDashboard: React.FC = () => {
     purchaseTreasureBox, openOwnedBox, addTransaction, submitQuest, failQuest, timezoneOffset = 480,
     currencySymbol, transferMoney,
     setUserPin,
+    parentReturnId, exitKidPreview,
+    kidTheme,
   } = useStore();
+
+  const navigate = useNavigate();
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'badges' | 'treasure' | 'adventure'>('dashboard');
 
@@ -202,6 +209,60 @@ const KidDashboard: React.FC = () => {
 
   const todayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
 
+  // ── Chart ⑦: kid expense category data ───────────────────────────────────
+  const myKidCategoryData = useMemo(() => {
+    if (!currentUser) return [];
+    const myEnvIds = envelopes.filter(e => e.ownerId === currentUser.id).map(e => e.id);
+    const map: Record<string, number> = {};
+    transactions
+      .filter(t => t.amount < 0 && t.categoryId && myEnvIds.includes(t.envelopeId))
+      .forEach(t => { map[t.categoryId!] = (map[t.categoryId!] || 0) + Math.abs(t.amount); });
+    return Object.entries(map).map(([id, value]) => {
+      const c = expenseCategories.find(x => x.id === id);
+      return { name: c?.name || '其他', icon: c?.icon || '❓', value };
+    }).sort((a, b) => b.value - a.value);
+  }, [transactions, expenseCategories, envelopes, currentUser]);
+
+  // ── Chart ⑤: monthly savings trend (investing envelopes) ────────────────
+  const mySavingsTrend = useMemo(() => {
+    if (!currentUser) return [];
+    const myInvestIds = envelopes.filter(e => e.ownerId === currentUser.id && e.type === 'investing').map(e => e.id);
+    if (myInvestIds.length === 0) return [];
+    const map: Record<string, number> = {};
+    transactions
+      .filter(t => myInvestIds.includes(t.envelopeId))
+      .forEach(t => {
+        const d = new Date(Number(t.timestamp));
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        map[key] = (map[key] || 0) + t.amount;
+      });
+    const sorted = Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).slice(-6);
+    let running = 0;
+    return sorted.map(([month, delta]) => {
+      running += delta;
+      return { month: month.slice(5), balance: Math.max(0, running) };
+    });
+  }, [transactions, envelopes, currentUser]);
+
+  // ── Chart ⑧: 30-day quest completion streak ──────────────────────────────
+  const streakDays = useMemo(() => {
+    if (!currentUser) return [];
+    const days: { date: Date; completed: number; total: number }[] = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      d.setHours(0, 0, 0, 0);
+      const dEnd = new Date(d); dEnd.setHours(23, 59, 59, 999);
+      const dayQ = quests.filter(q => {
+        if (q.ownerId !== currentUser.id) return false;
+        const ts = q.createdAt ? new Date(q.createdAt) : null;
+        return ts && ts >= d && ts <= dEnd;
+      });
+      days.push({ date: d, completed: dayQ.filter(q => q.status === 'completed').length, total: dayQ.length });
+    }
+    return days;
+  }, [quests, currentUser]);
+
   if (!currentUser) return null;
 
   const myEnvelopes = envelopes.filter(e => e.ownerId === currentUser.id && !e.isHidden);
@@ -215,23 +276,6 @@ const KidDashboard: React.FC = () => {
   const expToNextLevel = calculateExpToNextLevel(currentUser.exp, formula);
   const { progressPercent } = calculateLevelProgress(currentUser.exp, formula);
 
-  const handleAddExpense = (e: React.FormEvent) => {
-    e.preventDefault();
-    setExpenseError(null);
-    if (!selectedEnvId || !expenseAmount) return;
-    const amount = Number(expenseAmount);
-    if (amount <= 0) {
-      setExpenseError('花費金額必須大於 0！');
-      return;
-    }
-    const env = myEnvelopes.find(e => e.id === selectedEnvId);
-    if (env && amount > env.balance) {
-      setExpenseError(`金額超出「${env.name}」的餘額（目前剩餘 ${currencySymbol}${env.balance}）`);
-      return;
-    }
-    addTransaction(selectedEnvId, -amount, expenseNote || '一般消費', selectedCategoryId || undefined);
-    setExpenseAmount(''); setExpenseNote(''); setSelectedCategoryId(''); setExpenseError(null);
-  };
 
   const handleTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -253,6 +297,20 @@ const KidDashboard: React.FC = () => {
       setTransferError((err as Error)?.message || '轉帳失敗');
     } finally {
       setIsTransferring(false);
+    }
+  };
+
+  const handleNumpadPress = (key: string) => {
+    setExpenseError(null);
+    if (key === '⌫') {
+      setExpenseAmount(s => s.slice(0, -1));
+    } else if (key === '.') {
+      if (!expenseAmount.includes('.')) setExpenseAmount(s => s + '.');
+    } else {
+      const parts = expenseAmount.split('.');
+      if (parts[1] && parts[1].length >= 2) return;
+      if (expenseAmount.replace('.', '').length >= 7) return;
+      setExpenseAmount(s => s + key);
     }
   };
 
@@ -344,7 +402,23 @@ const KidDashboard: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div data-theme={kidTheme} className="min-h-screen flex flex-col">
+
+      {/* ── Parent preview banner ── */}
+      {parentReturnId && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-amber-500/20 border-b border-amber-500/30 text-amber-300 text-sm font-bold sticky top-0 z-50">
+          <div className="flex items-center gap-2">
+            <span>👨 家長預覽模式</span>
+            <span className="text-amber-400/70 font-normal">· 正在查看 {currentUser.name} 的面板</span>
+          </div>
+          <button
+            onClick={() => { exitKidPreview(); navigate('/parent'); }}
+            className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-500/30 hover:bg-amber-500/50 text-amber-200 text-xs font-bold transition-colors"
+          >
+            ← 返回家長面板
+          </button>
+        </div>
+      )}
 
       {/* ── Top status bar ── */}
       <div className="kid-top-bar">
@@ -384,25 +458,59 @@ const KidDashboard: React.FC = () => {
               <DigitalClock timezoneOffset={timezoneOffset} isAdmin={false} />
             </div>
 
+            {/* Spending license / energy bar */}
+            {currentUser.spendingLicense && currentUser.spendingLicense.max > 0 && (() => {
+              const lic = currentUser.spendingLicense;
+              const energy = calcCurrentEnergy(lic);
+              const pct = Math.max(0, Math.min(100, (energy / lic.max) * 100));
+              const days = daysToFull(lic);
+              return (
+                <div className="rounded-2xl p-4" style={{ background: 'linear-gradient(135deg,#ecfdf5,#d1fae5)', border: '1px solid rgba(16,185,129,0.3)' }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-black uppercase tracking-wider" style={{ color: '#047857' }}>⚡ 花費能量</span>
+                    <span className="text-sm font-black" style={{ color: '#065f46' }}>
+                      {currencySymbol}{Math.floor(energy)} / {currencySymbol}{lic.max}
+                    </span>
+                  </div>
+                  <div className="h-2.5 rounded-full overflow-hidden" style={{ background: 'rgba(0,0,0,0.08)' }}>
+                    <div className="h-full transition-all" style={{ width: `${pct}%`, background: 'linear-gradient(90deg,#10b981,#34d399)' }} />
+                  </div>
+                  <div className="text-[10px] mt-1.5" style={{ color: '#065f46' }}>
+                    {days > 0 ? `再 ${days} 天充滿能量（能量內可自主花費，超過需家長同意）` : '✨ 能量已滿！可以盡情規劃'}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Wallet section */}
             <Section emoji="💰" title="我的錢包與儲蓄">
-              <div className="envelope-scroll">
-                {spendableEnvelopes.map(env => (
-                  <div key={env.id} className="envelope-card">
-                    <div className="absolute -right-2 -top-2 text-primary/5"><Wallet size={56} /></div>
-                    <div className="text-xs font-bold text-muted mb-1 relative z-10">{env.name}</div>
-                    <div className="text-3xl font-black text-primary relative z-10 leading-tight">{currencySymbol}{env.balance}</div>
-                    <div className="text-[10px] text-muted mt-1 relative z-10">可動用</div>
+              <div className="grid grid-cols-2 gap-3 mb-1">
+                {spendableEnvelopes.map(env => {
+                  const gp = calcGoalProgress(env, transactions);
+                  return (
+                  <div key={env.id} className="rounded-2xl p-4 relative overflow-hidden" style={{ background: '#dbeafe' }}>
+                    <div className="absolute right-2 bottom-2 opacity-10"><Wallet size={48} className="text-blue-600" /></div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider mb-1 relative z-10" style={{ color: '#3b82f6' }}>POWER MODULE</div>
+                    <div className="text-xs font-bold mb-1 relative z-10" style={{ color: '#64748b' }}>{env.name}</div>
+                    <div className="text-3xl font-black relative z-10 leading-tight" style={{ color: '#1e40af' }}>{currencySymbol}{env.balance}</div>
+                    <div className="text-[10px] mt-1 relative z-10" style={{ color: '#64748b' }}>可動用</div>
+                    {gp.hasGoal && <GoalStripe gp={gp} note={env.goalNote} currencySymbol={currencySymbol} tone="blue" />}
                   </div>
-                ))}
-                {investingEnvelopes.map(env => (
-                  <div key={env.id} className="envelope-card border-l-4 border-l-emerald-500/60">
-                    <div className="absolute -right-2 -top-2 text-emerald-500/5"><TrendingUp size={56} /></div>
-                    <div className="text-xs font-bold text-muted mb-1 relative z-10">{env.name}</div>
-                    <div className="text-3xl font-black text-emerald-400 relative z-10 leading-tight">{currencySymbol}{env.balance}</div>
-                    <div className="text-[10px] text-emerald-400/60 mt-1 relative z-10">儲蓄</div>
+                  );
+                })}
+                {investingEnvelopes.map(env => {
+                  const gp = calcGoalProgress(env, transactions);
+                  return (
+                  <div key={env.id} className="rounded-2xl p-4 relative overflow-hidden border-2" style={{ background: '#dcfce7', borderColor: 'rgba(22,163,74,0.3)' }}>
+                    <div className="absolute right-2 bottom-2 opacity-10"><TrendingUp size={48} className="text-green-600" /></div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider mb-1 relative z-10" style={{ color: '#16a34a' }}>GROWTH FUND</div>
+                    <div className="text-xs font-bold mb-1 relative z-10" style={{ color: '#64748b' }}>{env.name}</div>
+                    <div className="text-3xl font-black relative z-10 leading-tight" style={{ color: '#16a34a' }}>{currencySymbol}{env.balance}</div>
+                    <div className="text-[10px] mt-1 relative z-10" style={{ color: '#16a34a' }}>儲蓄</div>
+                    {gp.hasGoal && <GoalStripe gp={gp} note={env.goalNote} currencySymbol={currencySymbol} tone="green" />}
                   </div>
-                ))}
+                  );
+                })}
               </div>
               <div className="flex gap-2 mt-4">
                 <button onClick={() => setShowTxLogSheet(true)} className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-sm font-bold text-muted hover:text-white transition-colors">
@@ -414,10 +522,71 @@ const KidDashboard: React.FC = () => {
                   </button>
                 )}
               </div>
+
+              {/* ⑤ 儲蓄成長折線圖 */}
+              {mySavingsTrend.length >= 2 && (() => {
+                const maxB = Math.max(...mySavingsTrend.map(m => m.balance), 1);
+                const H = 80;
+                const W = 100 / (mySavingsTrend.length - 1);
+                const pts = mySavingsTrend.map((m, i) => `${(i * W).toFixed(1)},${(H - (m.balance / maxB) * H).toFixed(1)}`).join(' ');
+                return (
+                  <div className="mt-4 rounded-2xl bg-white/5 border border-white/5 p-4">
+                    <div className="text-xs text-muted font-bold uppercase tracking-wider mb-3">儲蓄成長趨勢</div>
+                    <div className="relative w-full" style={{ height: `${H + 20}px` }}>
+                      <svg className="absolute inset-0 w-full" style={{ height: `${H}px` }} viewBox={`0 0 100 ${H}`} preserveAspectRatio="none">
+                        {[0, 50, 100].map(p => (
+                          <line key={p} x1="0" y1={H * p / 100} x2="100" y2={H * p / 100} stroke="rgba(255,255,255,0.05)" strokeWidth="0.5" />
+                        ))}
+                        {/* fill area */}
+                        <polygon
+                          points={`0,${H} ${pts} 100,${H}`}
+                          fill="rgba(52,211,153,0.12)"
+                        />
+                        <polyline points={pts} fill="none" stroke="#34d399" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+                        {mySavingsTrend.map((m, i) => (
+                          <circle key={i} cx={`${(i * W).toFixed(1)}%`} cy={(H - (m.balance / maxB) * H).toFixed(1)} r="3" fill="#34d399" />
+                        ))}
+                      </svg>
+                      <div className="absolute bottom-0 left-0 right-0 flex justify-between">
+                        {mySavingsTrend.map(m => (
+                          <span key={m.month} className="text-[10px] text-muted">{m.month}月</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="text-right text-xs text-emerald-400 font-bold mt-1">
+                      目前儲蓄 {currencySymbol}{investingEnvelopes.reduce((s, e) => s + e.balance, 0)}
+                    </div>
+                  </div>
+                );
+              })()}
             </Section>
 
             {/* Quest section (tabbed) */}
             <Section emoji="⚔️" title="冒險任務">
+              {/* ⑥ 任務完成率環圈圖 */}
+              {(() => {
+                const total = myQuests.length;
+                const done = myQuests.filter(q => q.status === 'completed').length;
+                const rate = total > 0 ? Math.round((done / total) * 100) : 0;
+                const r = 22, C = 2 * Math.PI * r;
+                const dash = (rate / 100) * C;
+                return (
+                  <div className="flex items-center gap-4 mb-4 p-3 rounded-2xl bg-white/5 border border-white/5">
+                    <svg width="60" height="60" viewBox="0 0 60 60" className="flex-shrink-0">
+                      <circle cx="30" cy="30" r={r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="6" />
+                      <circle cx="30" cy="30" r={r} fill="none" stroke="#6366f1" strokeWidth="6"
+                        strokeDasharray={`${dash} ${C - dash}`} strokeDashoffset={C * 0.25}
+                        strokeLinecap="round" style={{ transition: 'stroke-dasharray 0.7s ease' }} />
+                      <text x="30" y="35" textAnchor="middle" fill="white" fontSize="12" fontWeight="bold">{rate}%</text>
+                    </svg>
+                    <div className="flex flex-col gap-0.5">
+                      <div className="text-sm font-bold">任務完成率</div>
+                      <div className="text-xs text-muted">{done} / {total} 已完成</div>
+                      <div className="text-xs text-emerald-400">{total > 0 ? (rate >= 80 ? '🏆 表現優秀！' : rate >= 50 ? '💪 繼續加油！' : '⚡ 挑戰自己！') : '尚無任務'}</div>
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="flex bg-white/5 p-1 rounded-xl border border-white/10 gap-1 mb-4">
                 {([['flash', '⚡', '冒險任務快報'], ['weekly', '🗺️', '冒險任務週報']] as const).map(([t, em, label]) => (
                   <button key={t} onClick={() => setQuestTab(t)} className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all ${questTab === t ? 'bg-primary text-white shadow-md' : 'text-muted hover:text-white'}`}>
@@ -468,6 +637,33 @@ const KidDashboard: React.FC = () => {
 
             {/* Adventure log (5 entries) */}
             <Section emoji="📖" title="冒險日誌">
+              {/* ⑦ 花費分類圓餅圖 */}
+              {myKidCategoryData.length > 0 && (() => {
+                const PIE_COLORS = ['#22d3ee', '#818cf8', '#f472b6', '#fbbf24', '#34d399', '#a78bfa'];
+                const totalCatVal = myKidCategoryData.reduce((s, d) => s + d.value, 0);
+                let cumPct = 0;
+                const gradient = myKidCategoryData.slice(0, 6).map((d, i) => {
+                  const s = cumPct, e = cumPct + (d.value / totalCatVal) * 100;
+                  cumPct = e;
+                  return `${PIE_COLORS[i % PIE_COLORS.length]} ${s.toFixed(1)}% ${e.toFixed(1)}%`;
+                }).join(', ');
+                return (
+                  <div className="flex items-center gap-4 mb-4 p-3 rounded-2xl bg-white/5 border border-white/5">
+                    <div className="w-16 h-16 rounded-full flex-shrink-0"
+                      style={{ background: `conic-gradient(${gradient})`, boxShadow: '0 0 0 3px rgba(255,255,255,0.05)' }} />
+                    <div className="flex flex-col gap-1 min-w-0 flex-1">
+                      <div className="text-xs font-bold text-muted">我的花費分類</div>
+                      {myKidCategoryData.slice(0, 3).map((d, i) => (
+                        <div key={d.name} className="flex items-center gap-2 text-xs">
+                          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                          <span className="truncate text-muted">{d.icon} {d.name}</span>
+                          <span className="ml-auto font-bold">{currencySymbol}{d.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
               {adventureLog.length === 0 ? (
                 <div className="text-center text-muted py-6 text-sm bg-white/5 rounded-xl">尚無冒險紀錄</div>
               ) : (
@@ -518,6 +714,54 @@ const KidDashboard: React.FC = () => {
         {/* BADGES TAB */}
         {activeTab === 'badges' && (
           <div className="max-w-2xl mx-auto px-4 pt-4 animate-in zoom-in-95 fade-in duration-300">
+            {/* ⑧ 連續完成日曆 */}
+            {(() => {
+              const streak = (() => {
+                let s = 0;
+                for (let i = streakDays.length - 1; i >= 0; i--) {
+                  if (streakDays[i].total > 0 && streakDays[i].completed === streakDays[i].total) s++;
+                  else if (i < streakDays.length - 1) break;
+                }
+                return s;
+              })();
+              return (
+                <div className="glass-card mb-6 flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="pilot-section-label">PERFORMANCE LOG</span>
+                      <div className="text-xs text-muted font-bold">近30天任務連續完成</div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-2xl">🔥</span>
+                      <div>
+                        <div className="text-lg font-black" style={{ color: '#d97706' }}>{streak} Day Win Streak!</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid gap-1" style={{ gridTemplateColumns: 'repeat(10, 1fr)' }}>
+                    {streakDays.map((day, i) => {
+                      const isToday = day.date.toDateString() === new Date().toDateString();
+                      const bg = day.total === 0 ? 'rgba(255,255,255,0.04)' : day.completed === day.total ? '#10b981' : day.completed > 0 ? '#f59e0b' : '#ef4444';
+                      return (
+                        <div
+                          key={i}
+                          title={`${day.date.getMonth()+1}/${day.date.getDate()} ${day.completed}/${day.total}`}
+                          className={`rounded-md aspect-square ${isToday ? 'ring-2 ring-white/40' : ''}`}
+                          style={{ background: bg }}
+                        />
+                      );
+                    })}
+                  </div>
+                  <div className="flex gap-3">
+                    {[['#10b981','全部完成'],['#f59e0b','部分完成'],['#ef4444','未完成'],['rgba(255,255,255,0.04)','無任務']].map(([c,l]) => (
+                      <div key={l as string} className="flex items-center gap-1 text-[10px] text-muted">
+                        <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: c as string }} />{l}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
             <div className="flex flex-col items-center mb-8">
               <div className="w-16 h-16 bg-amber-400/20 text-amber-400 rounded-full flex items-center justify-center mb-2"><Award size={40} /></div>
               <h3 className="text-2xl font-black">我的成就牆</h3>
@@ -666,33 +910,107 @@ const KidDashboard: React.FC = () => {
 
       {/* EXPENSE BOTTOM SHEET */}
       {showExpenseSheet && (
-        <BottomSheet title="📝 紀錄新支出" onClose={() => { setShowExpenseSheet(false); setExpenseError(null); }}>
-          <form onSubmit={e => { handleAddExpense(e); if (!expenseError) setShowExpenseSheet(false); }} className="flex flex-col gap-4">
-            <div>
-              <label className="text-xs text-muted ml-1 mb-1.5 block font-bold">扣款信封</label>
-              <select className="input-field" value={selectedEnvId} onChange={e => { setSelectedEnvId(e.target.value); setExpenseError(null); }} required>
-                <option value="">選擇信封...</option>
-                {spendableEnvelopes.map(env => <option key={env.id} value={env.id}>{env.name}（{currencySymbol}{env.balance}）</option>)}
-              </select>
+        <BottomSheet title="紀錄支出" onClose={() => { setShowExpenseSheet(false); setExpenseError(null); setExpenseAmount(''); setExpenseNote(''); setSelectedCategoryId(''); }}>
+          {/* Big amount display */}
+          <div className="rounded-2xl p-5 mb-4 text-center" style={{ background: '#e8eef5' }}>
+            <span className="pilot-section-label">LOG TRANSMISSION · 支出金額</span>
+            <div className="flex items-center justify-center gap-1 mt-2">
+              <span className="text-2xl font-black" style={{ color: '#2563eb' }}>{currencySymbol}</span>
+              <span className="text-5xl font-black tracking-tight" style={{ color: '#0f172a' }}>{expenseAmount || '0'}</span>
+              <span className="inline-block w-0.5 h-10 ml-1 rounded-full animate-pulse" style={{ background: '#2563eb' }} />
             </div>
-            <div>
-              <label className="text-xs text-muted ml-1 mb-1.5 block font-bold">花費類別（選填）</label>
-              <select className="input-field" value={selectedCategoryId} onChange={e => setSelectedCategoryId(e.target.value)}>
-                <option value="">(不選擇)</option>
-                {expenseCategories.map(cat => <option key={cat.id} value={cat.id}>{cat.icon} {cat.name}</option>)}
-              </select>
+          </div>
+
+          {/* Envelope */}
+          <div className="mb-4">
+            <span className="pilot-section-label">ASSIGNED ENVELOPE</span>
+            <select className="input-field mt-1" value={selectedEnvId} onChange={e => { setSelectedEnvId(e.target.value); setExpenseError(null); }}>
+              <option value="">選擇信封...</option>
+              {spendableEnvelopes.map(env => <option key={env.id} value={env.id}>{env.name}（{currencySymbol}{env.balance}）</option>)}
+            </select>
+          </div>
+
+          {/* Category pills */}
+          {expenseCategories.length > 0 && (
+            <div className="mb-4">
+              <span className="pilot-section-label">MODULE CATEGORY</span>
+              <div className="category-pills mt-2">
+                {expenseCategories.map(cat => (
+                  <button key={cat.id} type="button"
+                    className={`category-pill ${selectedCategoryId === cat.id ? 'active' : ''}`}
+                    onClick={() => setSelectedCategoryId(prev => prev === cat.id ? '' : cat.id)}>
+                    <span className="category-pill-icon">{cat.icon}</span>
+                    {cat.name}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div>
-              <label className="text-xs text-muted ml-1 mb-1.5 block font-bold">金額</label>
-              <input type="number" placeholder="輸入金額" min="0.01" step="0.01" className={`input-field ${expenseError ? 'border-red-500/60' : ''}`} value={expenseAmount} onChange={e => { setExpenseAmount(e.target.value); setExpenseError(null); }} required />
+          )}
+
+          {/* Note */}
+          <div className="mb-2">
+            <span className="pilot-section-label">PILOT MEMO</span>
+            <input type="text" placeholder="這筆錢花在哪裡？" className="input-field mt-1"
+              value={expenseNote} onChange={e => setExpenseNote(e.target.value)} />
+          </div>
+
+          {expenseError && (
+            <div className="flex items-center gap-2 rounded-xl px-4 py-3 text-sm mb-2"
+              style={{ background: 'rgba(220,38,38,0.08)', color: '#dc2626', border: '1px solid rgba(220,38,38,0.2)' }}>
+              <span>⚠️</span><span>{expenseError}</span>
             </div>
-            <div>
-              <label className="text-xs text-muted ml-1 mb-1.5 block font-bold">備註（選填）</label>
-              <input type="text" placeholder="備註內容..." className="input-field" value={expenseNote} onChange={e => setExpenseNote(e.target.value)} />
-            </div>
-            {expenseError && <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-sm text-red-400"><span>⚠️</span><span>{expenseError}</span></div>}
-            <button type="submit" className="btn btn-primary w-full text-base">確認送出</button>
-          </form>
+          )}
+
+          {/* Energy preview: whether this spend will auto-approve or need parent */}
+          {currentUser.spendingLicense && currentUser.spendingLicense.max > 0 && expenseAmount && Number(expenseAmount) > 0 && (() => {
+            const lic = currentUser.spendingLicense;
+            const energy = calcCurrentEnergy(lic);
+            const amt = Number(expenseAmount);
+            const willAuto = amt <= energy;
+            return (
+              <div className="flex items-center gap-2 rounded-xl px-4 py-3 text-sm mb-2"
+                style={willAuto
+                  ? { background: 'rgba(16,185,129,0.08)', color: '#047857', border: '1px solid rgba(16,185,129,0.2)' }
+                  : { background: 'rgba(245,158,11,0.08)', color: '#92400e', border: '1px solid rgba(245,158,11,0.2)' }}>
+                <span>{willAuto ? '⚡' : '🙋'}</span>
+                <span>
+                  {willAuto
+                    ? `在能量內（${currencySymbol}${Math.floor(energy)} → ${currencySymbol}${Math.floor(energy - amt)}），會自動核准`
+                    : `超過能量 ${currencySymbol}${Math.ceil(amt - energy)}，送出後需家長審核`}
+                </span>
+              </div>
+            );
+          })()}
+
+          {/* Numpad */}
+          <div className="numpad-grid">
+            {(['1','2','3','4','5','6','7','8','9','.','0','⌫'] as const).map(key => (
+              <button key={key} type="button"
+                className={`numpad-btn ${key === '⌫' || key === '.' ? 'numpad-action' : ''}`}
+                onClick={() => handleNumpadPress(key as string)}>
+                {key}
+              </button>
+            ))}
+          </div>
+
+          <button type="button" className="numpad-btn numpad-submit"
+            disabled={!expenseAmount || !selectedEnvId}
+            onClick={() => {
+              setExpenseError(null);
+              if (!selectedEnvId || !expenseAmount) { setExpenseError('請選擇信封並輸入金額'); return; }
+              const amount = Number(expenseAmount);
+              if (isNaN(amount) || amount <= 0) { setExpenseError('花費金額必須大於 0！'); return; }
+              const env = myEnvelopes.find(e => e.id === selectedEnvId);
+              if (env && amount > env.balance) {
+                setExpenseError(`金額超出「${env.name}」的餘額（目前剩餘 ${currencySymbol}${env.balance}）`);
+                return;
+              }
+              addTransaction(selectedEnvId, -amount, expenseNote || '一般消費', selectedCategoryId || undefined);
+              setExpenseAmount(''); setExpenseNote(''); setSelectedCategoryId(''); setExpenseError(null);
+              setShowExpenseSheet(false);
+            }}>
+            ✓ 確認送出
+          </button>
         </BottomSheet>
       )}
 
@@ -805,3 +1123,38 @@ const KidDashboard: React.FC = () => {
 };
 
 export default KidDashboard;
+
+// ─── GoalStripe (wish-goal progress overlay on envelope card) ────────────
+type Tone = 'blue' | 'green';
+const GoalStripe: React.FC<{
+  gp: ReturnType<typeof calcGoalProgress>;
+  note?: string;
+  currencySymbol: string;
+  tone: Tone;
+}> = ({ gp, note, currencySymbol, tone }) => {
+  if (!gp.hasGoal) return null;
+  const label = tone === 'blue' ? '#1e40af' : '#166534';
+  const barBg = 'rgba(0,0,0,0.08)';
+  const barFill = tone === 'blue'
+    ? 'linear-gradient(90deg,#3b82f6,#60a5fa)'
+    : 'linear-gradient(90deg,#16a34a,#4ade80)';
+  return (
+    <div className="mt-2 relative z-10">
+      <div className="flex items-center justify-between text-[10px] font-bold mb-1" style={{ color: label }}>
+        <span className="flex items-center gap-0.5"><Target size={10} /> {note ? note : '願望'}</span>
+        <span>{currencySymbol}{gp.balance} / {currencySymbol}{gp.goalAmount} {gp.achieved && '🎉'}</span>
+      </div>
+      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: barBg }}>
+        <div className="h-full" style={{ width: `${gp.percent}%`, background: barFill }} />
+      </div>
+      <div className="flex items-center justify-between text-[9px] mt-0.5" style={{ color: label, opacity: 0.75 }}>
+        <span>{gp.achieved ? '已達成！' : gp.etaDays !== null ? `再 ${gp.etaDays} 天達成` : '繼續存錢就能達成！'}</span>
+        {gp.deadlineDays !== null && (
+          <span style={{ color: gp.onTrack === false ? '#dc2626' : undefined, fontWeight: gp.onTrack === false ? 700 : undefined }}>
+            {gp.deadlineDays >= 0 ? `剩 ${gp.deadlineDays} 天` : `逾期 ${-gp.deadlineDays} 天`}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};

@@ -14,6 +14,11 @@ export interface Envelope {
   balance: number;
   isHidden: boolean;
   icon?: string; // custom emoji
+  // Wish-goal fields (optional, additive migration)
+  goalAmount?: number;         // target amount in currency units
+  goalDeadline?: string;       // ISO date; optional soft deadline
+  goalCreatedAt?: string;      // ISO timestamp when goal was set
+  goalNote?: string;           // what the kid is saving for
 }
 
 export interface Transaction {

@@ -102,9 +102,11 @@ const SHOP_CATEGORIES: { value: ShopItemCategory; label: string }[] = [
 ];
 
 const ASSET_TYPES: { value: AssetType; label: string }[] = [
-  { value: 'stock',  label: '📈 股票'    },
-  { value: 'forex',  label: '💱 外匯'    },
-  { value: 'crypto', label: '🪙 加密貨幣' },
+  { value: 'stock',     label: '📈 美股'         },
+  { value: 'stock_tw',  label: '🇹🇼 台股（上市）' },
+  { value: 'stock_otc', label: '🇹🇼 台股（上櫃）' },
+  { value: 'forex',     label: '💱 外匯'          },
+  { value: 'crypto',    label: '🪙 加密貨幣'      },
 ];
 
 const SPECIES_KEYS: PetSpecies[] = ['dragon', 'cat', 'fox', 'wolf', 'bunny', 'phoenix'];
@@ -458,6 +460,42 @@ const DestinationsTab: React.FC<{
   );
 };
 
+// ── GemRates editor ───────────────────────────────────────────────────────────
+const GemRatesEditor: React.FC = () => {
+  const { gemRates, updateGemRates } = useStore();
+  const [rates, setRates] = useState(gemRates);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = async () => {
+    await updateGemRates(rates);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      {[
+        { key: 'stockTw' as const, label: '台灣股票', unit: 'TWD/寶石', hint: '例：10 代表 1寶石=NT$10' },
+        { key: 'stockUs' as const, label: '美股',     unit: 'USD/寶石', hint: '例：3 代表 1寶石=$3美元' },
+        { key: 'crypto'  as const, label: '加密貨幣', unit: 'TWD/寶石', hint: '例：100 代表 1寶石=NT$100' },
+      ].map(({ key, label, unit, hint }) => (
+        <div key={key} className="flex flex-col gap-1">
+          <label className="text-xs text-muted font-bold">{label} <span className="text-slate-500 font-normal">({unit})</span></label>
+          <div className="text-[10px] text-slate-600 mb-1">{hint}</div>
+          <input type="number" min="0.001" step="0.001"
+            className="input-field text-sm"
+            value={rates[key]}
+            onChange={e => setRates(r => ({ ...r, [key]: parseFloat(e.target.value) || 0 }))}
+          />
+        </div>
+      ))}
+      <button onClick={handleSave} className="btn btn-primary text-sm">
+        {saved ? '✅ 已儲存' : '💾 儲存換算比例'}
+      </button>
+    </div>
+  );
+};
+
 // ── Assets tab ────────────────────────────────────────────────────────────────
 const AssetsTab: React.FC<{
   items: ManagedAsset[];
@@ -514,6 +552,13 @@ const AssetsTab: React.FC<{
         </div>
       ))}
       <button onClick={addItem} className="btn btn-ghost flex items-center gap-1.5 text-xs self-start mt-1"><Plus size={14} /> 新增資產</button>
+
+      {/* GemRates settings */}
+      <div className="mt-6 flex flex-col gap-3">
+        <div className="text-xs text-muted font-bold uppercase">🪙 寶石換算比例設定</div>
+        <div className="text-[10px] text-slate-500">設定各資產類型中，1顆寶石相當於多少現實貨幣單位</div>
+        <GemRatesEditor />
+      </div>
     </div>
   );
 };

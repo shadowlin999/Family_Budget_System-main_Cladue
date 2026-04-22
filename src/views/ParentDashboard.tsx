@@ -6,7 +6,12 @@ import {
   Eye, EyeOff, Trash2, Edit2, PlusCircle, Check, X,
   RefreshCw, TrendingUp, Image as ImageIcon, ChevronDown,
   ChevronUp, Copy, ArrowRightLeft, Save, Lock, LogOut, Shield,
+  Target,
 } from 'lucide-react';
+import type { Envelope } from '../types/envelope';
+import { calcGoalProgress } from '../domain/goal';
+import { calcCurrentEnergy, daysToFull } from '../domain/energy';
+import ReportModal from './ReportModal';
 import { GamificationAdmin } from './GamificationAdmin';
 import { EmojiInput } from '../components/EmojiInput';
 import { DigitalClock } from '../components/DigitalClock';
@@ -35,6 +40,7 @@ const Section: React.FC<{ emoji: string; title: string; children: React.ReactNod
 const ParentDashboard: React.FC = () => {
   const {
     currentUser, logout, systemAdminRole,
+    priceErrors,
     users, envelopes, transactions, quests,
     routineQuests = [], expenseCategories = [],
     addExpenseCategory, updateExpenseCategory, deleteExpenseCategory,
@@ -43,6 +49,7 @@ const ParentDashboard: React.FC = () => {
     addKid, updateKid, toggleHideKid, deleteKid,
     manualDistributeAllowance,
     updateKidAllowance, addEnvelope, updateEnvelope, deleteEnvelope, toggleHideEnvelope,
+    setEnvelopeGoal, clearEnvelopeGoal, updateKidLicense,
     setUserPin,
     addTransaction, approveTransaction, rejectTransaction,
     adminInviteCode, kidInviteCode, regenerateInviteCode,
@@ -53,10 +60,12 @@ const ParentDashboard: React.FC = () => {
     treasureClaims = [], approveTreasureClaim,
     treasureBoxes = [],
     currencySymbol, updateCurrencySymbol,
+    kidTheme, setKidTheme,
     allowanceSettings, updateAllowanceSettings,
     transferMoney,
     exportFamilyData,
     importFamilyData,
+    enterKidPreview,
   } = useStore();
 
   const navigate = useNavigate();
@@ -162,6 +171,9 @@ const ParentDashboard: React.FC = () => {
     setKaMinute(s.minute ?? 0);
   };
 
+  // ── Price error dismiss ────────────────────────────────────────────────────
+  const [priceErrorDismissed, setPriceErrorDismissed] = useState(false);
+
   // ── Invite copy ────────────────────────────────────────────────────────────
   const [copiedAdmin, setCopiedAdmin] = useState(false);
   const [copiedKid, setCopiedKid] = useState(false);
@@ -178,6 +190,10 @@ const ParentDashboard: React.FC = () => {
   const [importStatus, setImportStatus] = useState<{ type: 'idle' | 'loading' | 'success' | 'error', message?: string }>({ type: 'idle' });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── Spending sub-tab (for charts ③ ④) ─────────────────────────────────────
+  const [spendingSubTab, setSpendingSubTab] = useState<'pie' | 'trend' | 'monthly'>('pie');
+  const [showReport, setShowReport] = useState(false);
+
   // ── Derived data ───────────────────────────────────────────────────────────
   const allKids = users.filter(u => u.role === 'kid');
   const kidEnvIds = envelopes.filter(e => allKids.some(k => k.id === e.ownerId)).map(e => e.id);
@@ -192,6 +208,24 @@ const ParentDashboard: React.FC = () => {
       return { name: c?.name || '其他', icon: c?.icon || '❓', value };
     }).sort((a, b) => b.value - a.value);
   }, [transactions, expenseCategories, kidEnvIds]);
+
+  // ── Monthly income/expense data for charts ③ ④ ────────────────────────────
+  const monthlyData = useMemo(() => {
+    const map: Record<string, { income: number; expense: number }> = {};
+    transactions
+      .filter(t => kidEnvIds.includes(t.envelopeId))
+      .forEach(t => {
+        const d = new Date(Number(t.timestamp));
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        if (!map[key]) map[key] = { income: 0, expense: 0 };
+        if (t.amount >= 0) map[key].income += t.amount;
+        else map[key].expense += Math.abs(t.amount);
+      });
+    return Object.entries(map)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-6)
+      .map(([month, v]) => ({ month: month.slice(5), ...v, balance: v.income - v.expense }));
+  }, [transactions, kidEnvIds]);
 
   if (!currentUser) return null;
 
@@ -444,6 +478,36 @@ const ParentDashboard: React.FC = () => {
           <RoutineQuestPanel activeKids={activeKids} allKids={allKids} routineQuests={routineQuests} treasureBoxes={treasureBoxes} addRoutineQuest={addRoutineQuest} updateRoutineQuest={updateRoutineQuest} deleteRoutineQuest={deleteRoutineQuest} forceGenerateRoutineQuests={forceGenerateRoutineQuests} />
         )}
         <div className="mt-6"><GamificationAdmin /></div>
+
+        {/* ② 任務完成率統計 */}
+        {allKids.length > 0 && (() => {
+          const kidStats = allKids.map(kid => {
+            const kidQuests = quests.filter(q => q.ownerId === kid.id);
+            const done = kidQuests.filter(q => q.status === 'completed').length;
+            const total = kidQuests.length;
+            const rate = total > 0 ? Math.round((done / total) * 100) : 0;
+            return { name: kid.name, done, total, rate };
+          });
+          return (
+            <div className="rounded-2xl bg-white/5 border border-white/5 p-4 flex flex-col gap-3 mt-4">
+              <div className="text-xs text-muted font-bold uppercase tracking-wider">任務完成率</div>
+              {kidStats.map(({ name, done, total, rate }) => (
+                <div key={name} className="flex flex-col gap-1">
+                  <div className="flex justify-between text-xs">
+                    <span className="font-semibold">{name}</span>
+                    <span className="text-muted">{done}/{total} 任務 · {rate}%</span>
+                  </div>
+                  <div className="h-4 rounded-full bg-white/5 overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-700"
+                      style={{ width: `${rate}%`, background: rate >= 80 ? 'linear-gradient(90deg,#10b981,#34d399)' : rate >= 50 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#ef4444,#f87171)' }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </Section>
     </div>
   );
@@ -453,6 +517,49 @@ const ParentDashboard: React.FC = () => {
       {/* Kids management */}
       <Section emoji="👨‍👩‍👧" title="孩子帳戶" defaultOpen={true}>
         <div className="flex flex-col gap-4">
+          {/* ① 孩子資產對比長條圖 */}
+          {allKids.length > 0 && (() => {
+            const kidAssets = allKids.map(kid => {
+              const kidEnvs = envelopes.filter(e => e.ownerId === kid.id);
+              const spend = kidEnvs.filter(e => e.type === 'spendable').reduce((s, e) => s + e.balance, 0);
+              const invest = kidEnvs.filter(e => e.type === 'investing').reduce((s, e) => s + e.balance, 0);
+              return { name: kid.name, spend, invest, total: spend + invest };
+            });
+            const maxTotal = Math.max(...kidAssets.map(k => k.total), 1);
+            return (
+              <div className="rounded-2xl bg-white/5 border border-white/5 p-4 flex flex-col gap-3">
+                <div className="text-xs text-muted font-bold uppercase tracking-wider">孩子資產對比</div>
+                {kidAssets.map(({ name, spend, invest, total }) => (
+                  <div key={name} className="flex flex-col gap-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="font-semibold">{name}</span>
+                      <span className="text-muted">{currencySymbol}{total}</span>
+                    </div>
+                    <div className="h-5 rounded-full bg-white/5 overflow-hidden flex">
+                      <div
+                        className="h-full rounded-l-full transition-all duration-700"
+                        style={{ width: `${(spend / maxTotal) * 100}%`, background: 'linear-gradient(90deg,#6366f1,#818cf8)' }}
+                        title={`可動用 ${currencySymbol}${spend}`}
+                      />
+                      <div
+                        className="h-full transition-all duration-700"
+                        style={{ width: `${(invest / maxTotal) * 100}%`, background: 'linear-gradient(90deg,#10b981,#34d399)', borderRadius: invest > 0 && spend === 0 ? '9999px' : '0 9999px 9999px 0' }}
+                        title={`儲蓄 ${currencySymbol}${invest}`}
+                      />
+                    </div>
+                  </div>
+                ))}
+                <div className="flex gap-4 mt-1">
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                    <span className="w-3 h-3 rounded-full bg-indigo-500 inline-block" />可動用
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                    <span className="w-3 h-3 rounded-full bg-emerald-500 inline-block" />儲蓄
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           <form onSubmit={e => { e.preventDefault(); if (newKidName) { addKid(newKidName); setNewKidName(''); } }} className="flex gap-2">
             <input className={`${INPUT} flex-1`} placeholder="新增孩子名稱..." value={newKidName} onChange={e => setNewKidName(e.target.value)} />
             <button type="submit" className={`${BTN} bg-primary text-white px-5`}><PlusCircle size={18} /></button>
@@ -494,6 +601,7 @@ const ParentDashboard: React.FC = () => {
                         )}
                       </div>
                       <div className="flex gap-1 flex-shrink-0">
+                        <button onClick={() => { enterKidPreview(kid.id); navigate('/kid'); }} className="p-2.5 rounded-xl hover:bg-amber-500/20 text-amber-400/60 hover:text-amber-400 transition-colors" title={`以 ${kid.name} 身份查看`}><Eye size={16} /></button>
                         <button onClick={() => { setEditingKidId(kid.id); setEditingKidName(kid.name); }} className="p-2.5 rounded-xl hover:bg-white/10 text-slate-400 hover:text-white transition-colors"><Edit2 size={16} /></button>
                         <button onClick={() => toggleHideKid(kid.id)} className="p-2.5 rounded-xl hover:bg-white/10 text-slate-400 hover:text-white transition-colors">{kid.isHidden ? <Eye size={16} /> : <EyeOff size={16} />}</button>
                         <button onClick={() => { if (confirm(`刪除「${kid.name}」？`)) deleteKid(kid.id); }} className="p-2.5 rounded-xl hover:bg-error/20 text-error/60 hover:text-error transition-colors"><Trash2 size={16} /></button>
@@ -507,7 +615,7 @@ const ParentDashboard: React.FC = () => {
                     <div className="font-black text-primary text-lg">{currencySymbol}{spend}</div>
                   </div>
                   <div className="p-3 text-center">
-                    <div className="text-[10px] text-muted mb-0.5">儲蓄/投資</div>
+                    <div className="text-[10px] text-muted mb-0.5">儲蓄</div>
                     <div className="font-black text-green-400 text-lg">{currencySymbol}{invest}</div>
                   </div>
                 </div>
@@ -638,12 +746,14 @@ const ParentDashboard: React.FC = () => {
                         </div>
                       )}
                     </div>
+                    {/* Spending license */}
+                    <KidLicenseRow kid={kid} currencySymbol={currencySymbol} updateKidLicense={updateKidLicense} />
                     {/* Envelopes */}
                     <div className="flex flex-col gap-2">
                       <div className="text-xs text-muted font-bold uppercase">信封列表</div>
                       {kidEnvs.map(env => {
                         const isProtected = env.name === '存錢筒' || env.name === '隨身錢包';
-                        return <KidEnvelopeRow key={env.id} env={env} addTransaction={addTransaction} updateEnvelope={updateEnvelope} deleteEnvelope={deleteEnvelope} toggleHideEnvelope={toggleHideEnvelope} protected={isProtected} />;
+                        return <KidEnvelopeRow key={env.id} env={env} transactions={transactions} currencySymbol={currencySymbol} addTransaction={addTransaction} updateEnvelope={updateEnvelope} deleteEnvelope={deleteEnvelope} toggleHideEnvelope={toggleHideEnvelope} setEnvelopeGoal={setEnvelopeGoal} clearEnvelopeGoal={clearEnvelopeGoal} protected={isProtected} />;
                       })}
                       {expandedEnvKidId === kid.id ? (
                         <div className="flex flex-col gap-2 mt-1 p-3 bg-black/20 rounded-2xl border border-white/5">
@@ -652,8 +762,8 @@ const ParentDashboard: React.FC = () => {
                             <input className={`${INPUT} flex-1`} placeholder="信封名稱..." value={newEnvName} onChange={e => setNewEnvName(e.target.value)} />
                           </div>
                           <select className={INPUT} value={newEnvType} onChange={e => setNewEnvType(e.target.value as 'spendable' | 'investing')}>
-                            <option value="spendable">可動用區</option>
-                            <option value="investing">不可動用 / 儲蓄</option>
+                            <option value="spendable">可動用</option>
+                            <option value="investing">儲蓄（不可動用）</option>
                           </select>
                           <div className="flex gap-2">
                             <button onClick={() => { if (newEnvName) { addEnvelope(kid.id, newEnvName, newEnvType, newEnvIcon); setNewEnvName(''); setNewEnvIcon('✉️'); setExpandedEnvKidId(null); } }} className={`${BTN} flex-1 bg-primary text-white`}>確認新增</button>
@@ -851,26 +961,127 @@ const ParentDashboard: React.FC = () => {
 
   const renderSettingsTab = () => (
     <div className="flex flex-col gap-4">
+      {/* Weekly/monthly report */}
+      <button
+        onClick={() => setShowReport(true)}
+        className={`${CARD} flex items-center gap-4 hover:border-indigo-400/40 transition-colors active:scale-[0.99]`}
+      >
+        <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-2xl" style={{ background: 'linear-gradient(135deg,#6366f1,#8b5cf6)' }}>📈</div>
+        <div className="flex-1 text-left">
+          <div className="font-black text-base">週報 / 月報</div>
+          <div className="text-xs text-muted">每週/月自動彙整收支、任務、能量、目標進度，可匯出圖片分享</div>
+        </div>
+        <span className="text-indigo-300 font-bold">→</span>
+      </button>
+
       {/* Chart */}
       <Section emoji="📊" title="花費統計" defaultOpen={false}>
-        <div className="flex flex-col items-center gap-6">
-          <div className="w-44 h-44 rounded-full border-4 border-white/5 shadow-xl"
-            style={{ background: totalCat === 0 ? '#1e293b' : `conic-gradient(${(() => { let c = 0; return categoryData.map((d, i) => { const s = c, e = c + (d.value / totalCat) * 100; c = e; return `${COLORS[i % COLORS.length]} ${s}% ${e}%`; }).join(', '); })()})` }} />
-          <div className="w-full space-y-2.5">
-            {categoryData.length === 0
-              ? <p className="text-center text-muted text-sm">尚無分類支出</p>
-              : categoryData.slice(0, 6).map((d, i) => (
-                <div key={d.name} className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: COLORS[i % COLORS.length] }} />
-                  <span className="text-sm w-20 truncate">{d.icon} {d.name}</span>
-                  <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all" style={{ width: `${(d.value / totalCat) * 100}%`, background: COLORS[i % COLORS.length] }} />
+        {/* Sub-tab selector */}
+        <div className="flex gap-1 bg-black/30 p-1 rounded-2xl mb-5 border border-white/5">
+          {([['pie', '圓餅圖'], ['trend', '趨勢折線'], ['monthly', '月度收支']] as const).map(([t, l]) => (
+            <button key={t} onClick={() => setSpendingSubTab(t)} className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all ${spendingSubTab === t ? 'bg-primary text-white shadow-lg' : 'text-muted hover:text-white'}`}>{l}</button>
+          ))}
+        </div>
+
+        {/* Original pie chart */}
+        {spendingSubTab === 'pie' && (
+          <div className="flex flex-col items-center gap-6">
+            <div className="w-44 h-44 rounded-full border-4 border-white/5 shadow-xl"
+              style={{ background: totalCat === 0 ? '#1e293b' : `conic-gradient(${(() => { let c = 0; return categoryData.map((d, i) => { const s = c, e = c + (d.value / totalCat) * 100; c = e; return `${COLORS[i % COLORS.length]} ${s}% ${e}%`; }).join(', '); })()})` }} />
+            <div className="w-full space-y-2.5">
+              {categoryData.length === 0
+                ? <p className="text-center text-muted text-sm">尚無分類支出</p>
+                : categoryData.slice(0, 6).map((d, i) => (
+                  <div key={d.name} className="flex items-center gap-3">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: COLORS[i % COLORS.length] }} />
+                    <span className="text-sm w-20 truncate">{d.icon} {d.name}</span>
+                    <div className="flex-1 h-2 bg-white/5 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{ width: `${(d.value / totalCat) * 100}%`, background: COLORS[i % COLORS.length] }} />
+                    </div>
+                    <span className="text-sm font-black w-14 text-right">{currencySymbol}{d.value}</span>
                   </div>
-                  <span className="text-sm font-black w-14 text-right">{currencySymbol}{d.value}</span>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {/* ③ 收支趨勢折線圖 */}
+        {spendingSubTab === 'trend' && (() => {
+          if (monthlyData.length === 0) return <p className="text-center text-muted text-sm py-4">尚無交易紀錄</p>;
+          const maxVal = Math.max(...monthlyData.flatMap(m => [m.income, m.expense]), 1);
+          const H = 120;
+          const W = 100 / (monthlyData.length - 1 || 1);
+          return (
+            <div className="flex flex-col gap-3">
+              <div className="text-xs text-muted font-bold uppercase tracking-wider">近6個月收支趨勢</div>
+              <div className="relative w-full" style={{ height: `${H + 24}px` }}>
+                <svg className="absolute inset-0 w-full" style={{ height: `${H}px` }} viewBox={`0 0 100 ${H}`} preserveAspectRatio="none">
+                  {/* grid lines */}
+                  {[0, 25, 50, 75, 100].map(p => (
+                    <line key={p} x1="0" y1={H * p / 100} x2="100" y2={H * p / 100} stroke="rgba(255,255,255,0.05)" strokeWidth="0.5" />
+                  ))}
+                  {/* income line */}
+                  <polyline points={monthlyData.map((m, i) => `${(i * W).toFixed(1)},${(H - (m.income / maxVal) * H).toFixed(1)}`).join(' ')}
+                    fill="none" stroke="#34d399" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+                  {/* expense line */}
+                  <polyline points={monthlyData.map((m, i) => `${(i * W).toFixed(1)},${(H - (m.expense / maxVal) * H).toFixed(1)}`).join(' ')}
+                    fill="none" stroke="#f87171" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+                  {/* income dots */}
+                  {monthlyData.map((m, i) => (
+                    <circle key={`in${i}`} cx={`${(i * W).toFixed(1)}%`} cy={(H - (m.income / maxVal) * H).toFixed(1)} r="2.5" fill="#34d399" />
+                  ))}
+                  {/* expense dots */}
+                  {monthlyData.map((m, i) => (
+                    <circle key={`ex${i}`} cx={`${(i * W).toFixed(1)}%`} cy={(H - (m.expense / maxVal) * H).toFixed(1)} r="2.5" fill="#f87171" />
+                  ))}
+                </svg>
+                {/* x-axis labels */}
+                <div className="absolute bottom-0 left-0 right-0 flex justify-between">
+                  {monthlyData.map(m => (
+                    <span key={m.month} className="text-[10px] text-muted">{m.month}月</span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex gap-4 mt-1">
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-400"><span className="w-3 h-3 rounded-full bg-emerald-400 inline-block" />收入</div>
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-400"><span className="w-3 h-3 rounded-full bg-red-400 inline-block" />支出</div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ④ 月度收支平衡長條圖 */}
+        {spendingSubTab === 'monthly' && (() => {
+          if (monthlyData.length === 0) return <p className="text-center text-muted text-sm py-4">尚無交易紀錄</p>;
+          const maxTotal = Math.max(...monthlyData.flatMap(m => [m.income, m.expense]), 1);
+          return (
+            <div className="flex flex-col gap-3">
+              <div className="text-xs text-muted font-bold uppercase tracking-wider">近6個月收支平衡</div>
+              {monthlyData.map(m => (
+                <div key={m.month} className="flex flex-col gap-1">
+                  <div className="flex justify-between text-xs">
+                    <span className="font-semibold">{m.month}月</span>
+                    <span className={m.balance >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                      {m.balance >= 0 ? '+' : ''}{currencySymbol}{m.balance}
+                    </span>
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <div className="h-3 rounded-full bg-white/5 overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${(m.income / maxTotal) * 100}%`, background: 'linear-gradient(90deg,#10b981,#34d399)' }} />
+                    </div>
+                    <div className="h-3 rounded-full bg-white/5 overflow-hidden">
+                      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${(m.expense / maxTotal) * 100}%`, background: 'linear-gradient(90deg,#ef4444,#f87171)' }} />
+                    </div>
+                  </div>
                 </div>
               ))}
-          </div>
-        </div>
+              <div className="flex gap-4 mt-1">
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-400"><span className="w-3 h-3 rounded-full bg-emerald-400 inline-block" />收入</div>
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-400"><span className="w-3 h-3 rounded-full bg-red-400 inline-block" />支出</div>
+              </div>
+            </div>
+          );
+        })()}
       </Section>
 
       {/* Categories */}
@@ -971,6 +1182,39 @@ const ParentDashboard: React.FC = () => {
             </div>
             <div className="text-xs text-slate-500 text-center">目前幣別符號：<span className="text-white font-black">{currencySymbol}</span></div>
           </div>
+          {/* Theme Picker */}
+          <div className="flex flex-col gap-3">
+            <div className="text-xs text-muted font-bold uppercase flex items-center gap-1.5">🎨 介面主題</div>
+            <div className="grid grid-cols-2 gap-3">
+              {THEMES.map(theme => (
+                <button
+                  key={theme.id}
+                  onClick={() => setKidTheme(theme.id)}
+                  className={`p-4 rounded-2xl border-2 text-left transition-all active:scale-95 ${
+                    kidTheme === theme.id
+                      ? 'border-primary bg-primary/10'
+                      : 'border-white/10 bg-white/5 hover:border-white/30'
+                  }`}
+                >
+                  {/* Mini preview */}
+                  <div className="w-full h-10 rounded-xl mb-3 flex gap-1 p-1.5" style={{ background: theme.previewBg }}>
+                    <div className="flex-1 rounded-lg" style={{ background: theme.previewCard }} />
+                    <div className="flex-1 rounded-lg" style={{ background: theme.previewCard }} />
+                  </div>
+                  <div className="text-base mb-0.5">{theme.emoji}</div>
+                  <div className="font-bold text-sm">{theme.name}</div>
+                  <div className="text-xs text-muted mt-0.5">{theme.desc}</div>
+                  {kidTheme === theme.id && (
+                    <div className="text-[10px] text-primary font-bold mt-1.5 flex items-center gap-1">
+                      <Check size={10} /> 目前使用
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+            <div className="text-xs text-muted text-center">主題設定同時套用至家長與孩子端</div>
+          </div>
+
           {/* Parent Transfer */}
           <div className="flex flex-col gap-3">
             <div className="text-xs text-muted font-bold uppercase flex items-center gap-1.5"><ArrowRightLeft size={13} /> 家長金額互轉（雙向）</div>
@@ -1139,8 +1383,14 @@ const ParentDashboard: React.FC = () => {
   );
 
   // ── Main render ────────────────────────────────────────────────────────────
+  // ── Available themes ───────────────────────────────────────────────────────
+  const THEMES = [
+    { id: 'pilot',  name: 'Pilot Interface', emoji: '🌟', desc: '明亮現代介面', previewBg: '#e8eef5', previewCard: '#ffffff' },
+    { id: 'dark',   name: 'Dark Galactic',   emoji: '🌌', desc: '深色宇宙風格', previewBg: '#0b1120', previewCard: '#111827' },
+  ] as const;
+
   return (
-    <div className="flex flex-col min-h-screen">
+    <div data-theme={kidTheme} className="flex flex-col min-h-screen">
       {/* Top bar */}
       <div className="flex items-center gap-2 px-4 pt-3 pb-2">
         <div className="w-10 h-10 rounded-full bg-gradient-to-br from-primary to-info flex items-center justify-center text-white font-black text-lg flex-shrink-0">
@@ -1169,6 +1419,21 @@ const ParentDashboard: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Price fetch error notification */}
+      {priceErrors.length > 0 && !priceErrorDismissed && (
+        <div className="mx-3 mt-2 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-black text-amber-400">⚠️ 投資價格備援通知</div>
+            <button onClick={() => setPriceErrorDismissed(true)} className="text-[10px] text-muted">忽略</button>
+          </div>
+          {priceErrors.map((err, i) => (
+            <div key={i} className="text-[10px] text-amber-300">
+              {err.assetType}：{err.failedSource} 失效，改用 {err.fallbackSource}（{new Date(err.timestamp).toLocaleString('zh-TW')}）
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Tab content */}
       <div className="flex-1 px-3 pb-24 flex flex-col gap-4 mt-2">
@@ -1200,23 +1465,109 @@ const ParentDashboard: React.FC = () => {
           </button>
         ))}
       </nav>
+
+      {showReport && (
+        <ReportModal
+          kids={allKids}
+          envelopes={envelopes}
+          transactions={transactions}
+          quests={quests}
+          expenseCategories={expenseCategories}
+          currencySymbol={currencySymbol}
+          onClose={() => setShowReport(false)}
+        />
+      )}
     </div>
   );
 };
 
 export default ParentDashboard;
 
+// ─── KidLicenseRow (spending cap + energy license) ───────────────────────────
+const KidLicenseRow: React.FC<{
+  kid: User;
+  currencySymbol: string;
+  updateKidLicense: (kidId: string, max: number) => Promise<void>;
+}> = ({ kid, currencySymbol, updateKidLicense }) => {
+  const lic = kid.spendingLicense;
+  const [editing, setEditing] = useState(false);
+  const [maxInput, setMaxInput] = useState(lic ? String(lic.max) : '');
+
+  const enabled = !!lic && lic.max > 0;
+  const energy = enabled ? calcCurrentEnergy(lic) : 0;
+  const daysLeft = enabled ? daysToFull(lic) : 0;
+  const percent = enabled && lic.max > 0 ? Math.max(0, Math.min(100, (energy / lic.max) * 100)) : 0;
+
+  const save = async () => {
+    const n = Number(maxInput);
+    if (!Number.isFinite(n) || n < 0) return;
+    await updateKidLicense(kid.id, n);
+    setEditing(false);
+  };
+
+  return (
+    <div className="rounded-2xl border border-white/5 bg-white/5 p-3 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted font-bold uppercase flex items-center gap-1">
+          <Lock size={12} /> 花費許可證 {enabled ? '' : <span className="text-slate-500 normal-case font-normal">（未啟用）</span>}
+        </div>
+        <button onClick={() => { setMaxInput(lic ? String(lic.max) : ''); setEditing(v => !v); }} className="text-[11px] text-indigo-300 hover:text-indigo-200 font-bold">
+          {editing ? '收合' : (enabled ? '調整' : '啟用')}
+        </button>
+      </div>
+
+      {enabled && !editing && (
+        <>
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="text-muted">目前能量</span>
+            <span className="font-black text-white">{currencySymbol}{Math.floor(energy)} / {currencySymbol}{lic.max}</span>
+          </div>
+          <div className="h-2 bg-black/30 rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-300 transition-all" style={{ width: `${percent}%` }} />
+          </div>
+          <div className="text-[10px] text-muted">
+            {daysLeft > 0 ? `約 ${daysLeft} 天後充滿（每日 +${currencySymbol}${(lic.max / 30).toFixed(1)}）` : '✨ 已充滿'}
+          </div>
+          <div className="text-[10px] text-slate-500 leading-relaxed">
+            🔹 小孩在能量內可自主消費（不需審核）<br />
+            🔹 超過能量的消費仍會進入待審核
+          </div>
+        </>
+      )}
+
+      {editing && (
+        <div className="flex flex-col gap-2">
+          <div className="text-[11px] text-muted leading-relaxed">
+            設定能量上限（此額度內小孩可自主消費，上限於 30 天內線性充滿）。設為 0 可關閉系統。
+          </div>
+          <div className="flex gap-2">
+            <span className="flex items-center px-2 text-muted text-sm">{currencySymbol}</span>
+            <input type="number" min="0" className="flex-1 bg-slate-900/70 border border-white/10 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary"
+              placeholder="能量上限（0 = 關閉）" value={maxInput} onChange={e => setMaxInput(e.target.value)} autoFocus />
+            <button onClick={save} className={`${BTN} px-3 bg-emerald-500 text-white text-xs h-10`}>儲存</button>
+            <button onClick={() => setEditing(false)} className={`${BTN} px-3 bg-white/10 text-muted text-xs h-10`}>取消</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── KidEnvelopeRow ───────────────────────────────────────────────────────────
 const BTN_ROW = 'h-10 w-10 flex items-center justify-center rounded-xl transition-colors';
 
 const KidEnvelopeRow: React.FC<{
-  env: { id: string; name: string; balance: number; type: string; isHidden: boolean; icon?: string };
+  env: Envelope;
+  transactions: { id: string; envelopeId: string; amount: number; timestamp: string; note: string; status: 'pending' | 'approved' | 'rejected' }[];
+  currencySymbol: string;
   addTransaction: (id: string, amt: number, note: string) => Promise<void>;
   updateEnvelope: (id: string, name: string, icon?: string) => Promise<void>;
   deleteEnvelope: (id: string) => Promise<void>;
   toggleHideEnvelope: (id: string) => Promise<void>;
+  setEnvelopeGoal: (id: string, amount: number, deadline?: string, note?: string) => Promise<void>;
+  clearEnvelopeGoal: (id: string) => Promise<void>;
   protected?: boolean;
-}> = ({ env, addTransaction, updateEnvelope, deleteEnvelope, toggleHideEnvelope, protected: isProtected = false }) => {
+}> = ({ env, transactions, currencySymbol, addTransaction, updateEnvelope, deleteEnvelope, toggleHideEnvelope, setEnvelopeGoal, clearEnvelopeGoal, protected: isProtected = false }) => {
   const INPUT_LOCAL = 'bg-slate-900/70 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-primary w-full';
   const [showAdj, setShowAdj] = useState(false);
   const [adjAmt, setAdjAmt] = useState('');
@@ -1225,11 +1576,36 @@ const KidEnvelopeRow: React.FC<{
   const [eName, setEName] = useState(env.name);
   const [eIcon, setEIcon] = useState(env.icon || '✉️');
 
+  // Wish-goal UI state
+  const [showGoal, setShowGoal] = useState(false);
+  const [gAmount, setGAmount] = useState(env.goalAmount ? String(env.goalAmount) : '');
+  const [gDeadline, setGDeadline] = useState(env.goalDeadline ?? '');
+  const [gNote, setGNote] = useState(env.goalNote ?? '');
+
+  const progress = useMemo(
+    () => calcGoalProgress(env, transactions as never),
+    [env, transactions],
+  );
+
   const doAdj = () => {
     const n = Number(adjAmt);
     if (!adjAmt || isNaN(n)) return;
     addTransaction(env.id, n, adjNote || (n > 0 ? '加入' : '扣除'));
     setAdjAmt(''); setAdjNote(''); setShowAdj(false);
+  };
+
+  const doSaveGoal = () => {
+    const n = Number(gAmount);
+    if (!Number.isFinite(n) || n <= 0) return;
+    setEnvelopeGoal(env.id, n, gDeadline || undefined, gNote || undefined);
+    setShowGoal(false);
+  };
+
+  const doClearGoal = () => {
+    if (!confirm(`取消「${env.name}」的願望目標？`)) return;
+    clearEnvelopeGoal(env.id);
+    setGAmount(''); setGDeadline(''); setGNote('');
+    setShowGoal(false);
   };
 
   return (
@@ -1250,6 +1626,7 @@ const KidEnvelopeRow: React.FC<{
             <span className={`font-black text-base flex-shrink-0 ${env.type === 'spendable' ? 'text-primary' : 'text-green-400'}`}>${env.balance}</span>
             <div className="flex gap-1 flex-shrink-0">
               <button onClick={() => setShowAdj(v => !v)} className={`${BTN_ROW} hover:bg-info/20 text-muted hover:text-info`} title="調整餘額"><span className="text-sm font-bold">±</span></button>
+              <button onClick={() => setShowGoal(v => !v)} className={`${BTN_ROW} hover:bg-amber-500/20 ${progress.hasGoal ? 'text-amber-300' : 'text-muted hover:text-amber-300'}`} title="設定願望目標"><Target size={14} /></button>
               <button onClick={() => { setEditing(true); setEName(env.name); setEIcon(env.icon || '✉️'); }} className={`${BTN_ROW} hover:bg-white/10 text-muted hover:text-white`}><Edit2 size={14} /></button>
               {!isProtected && <button onClick={() => toggleHideEnvelope(env.id)} className={`${BTN_ROW} hover:bg-white/10 text-muted hover:text-white`}>{env.isHidden ? <Eye size={14} /> : <EyeOff size={14} />}</button>}
               {!isProtected ? (
@@ -1267,6 +1644,48 @@ const KidEnvelopeRow: React.FC<{
           <input type="text" placeholder="備註..." className={`${INPUT_LOCAL} flex-1`} value={adjNote} onChange={e => setAdjNote(e.target.value)} />
           <button onClick={doAdj} className="px-4 py-2 rounded-xl bg-primary text-white font-bold text-sm flex-shrink-0">確認</button>
           <button onClick={() => setShowAdj(false)} className="p-2 text-muted"><X size={16} /></button>
+        </div>
+      )}
+
+      {/* Goal progress summary (always visible if goal set) */}
+      {progress.hasGoal && !showGoal && (
+        <div className="px-4 py-2 bg-amber-500/5 border-t border-amber-500/10">
+          <div className="flex items-center justify-between text-[11px] text-muted mb-1">
+            <span className="font-bold text-amber-300 flex items-center gap-1"><Target size={11} /> 願望 {env.goalNote ? `· ${env.goalNote}` : ''}</span>
+            <span className="font-black text-amber-300">
+              {currencySymbol}{env.balance} / {currencySymbol}{progress.goalAmount}
+              {progress.achieved && <span className="ml-2">🎉</span>}
+            </span>
+          </div>
+          <div className="h-1.5 bg-black/30 rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-amber-500 to-amber-300" style={{ width: `${progress.percent}%` }} />
+          </div>
+          <div className="flex items-center justify-between text-[10px] text-muted mt-1">
+            <span>{progress.achieved ? '已達成' : progress.etaDays !== null ? `預計 ${progress.etaDays} 天達成` : '近 30 天無存款紀錄'}</span>
+            {progress.deadlineDays !== null && (
+              <span className={progress.onTrack === false ? 'text-red-400 font-bold' : progress.onTrack ? 'text-green-400' : 'text-muted'}>
+                {progress.deadlineDays >= 0 ? `期限剩 ${progress.deadlineDays} 天` : `已逾期 ${-progress.deadlineDays} 天`}
+                {progress.onTrack === false && ' ⚠️'}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Goal editor */}
+      {showGoal && (
+        <div className="p-3 bg-black/30 border-t border-white/5 flex flex-col gap-2">
+          <div className="text-xs text-amber-300 font-bold flex items-center gap-1"><Target size={12} /> 願望目標</div>
+          <input type="number" min="1" placeholder={`目標金額（${currencySymbol}）`} className={INPUT_LOCAL} value={gAmount} onChange={e => setGAmount(e.target.value)} />
+          <input type="text" placeholder="我想買什麼？（選填）" className={INPUT_LOCAL} value={gNote} onChange={e => setGNote(e.target.value)} maxLength={40} />
+          <input type="date" className={INPUT_LOCAL} value={gDeadline ? gDeadline.slice(0, 10) : ''} onChange={e => setGDeadline(e.target.value ? new Date(e.target.value + 'T23:59:59').toISOString() : '')} />
+          <div className="flex gap-2">
+            <button onClick={doSaveGoal} className="flex-1 px-3 py-2 rounded-xl bg-amber-500 text-black font-bold text-sm">{env.goalAmount ? '更新' : '設定'}</button>
+            {env.goalAmount && (
+              <button onClick={doClearGoal} className="px-3 py-2 rounded-xl bg-red-500/20 text-red-300 font-bold text-sm">清除</button>
+            )}
+            <button onClick={() => setShowGoal(false)} className="px-3 py-2 rounded-xl bg-white/5 text-muted font-bold text-sm">取消</button>
+          </div>
         </div>
       )}
     </div>
